@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <title>CPV Demo - Кабинет рекламодателя</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="./proto.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-logo" aria-hidden="true"></span>
+          <span class="brand-text">Рекламная сеть</span>
+        </div>
+        <nav class="menu">
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Дашборд</span></a>
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Уведомления</span></a>
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Реклама на сайтах</span></a>
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Реклама в приложениях</span></a>
+          <a href="#" class="menu-item active"><span class="menu-icon"></span><span>Реклама в Telegram</span></a>
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Статистика</span></a>
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Документы</span></a>
+        </nav>
+        <div class="sidebar-caret">‹</div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <h1>Кабинет рекламодателя</h1>
+          <a href="/cpvdemo/auth">Страница блогера</a>
+        </header>
+
+        <section class="content">
+          <article class="card">
+            <h2>Создать оффер</h2>
+            <p class="muted">Заполните текст рекламы, диапазон дат и CPV. Затем выберите блогеров, которые уже авторизовались через бота.</p>
+            <div class="form-grid">
+              <label>Текст рекламы</label>
+              <textarea class="control textarea" id="advText" placeholder="Текст рекламного поста (без ERID)"></textarea>
+
+              <label>Дата начала</label>
+              <input class="control" id="advDateFrom" type="datetime-local" />
+
+              <label>Дата окончания</label>
+              <input class="control" id="advDateTo" type="datetime-local" />
+
+              <label>CPV, ₽</label>
+              <input class="control" id="advCpv" type="number" min="100" step="10" value="900" />
+
+              <label>Блогеры</label>
+              <div class="adv-blogger-list" id="advBloggerList"></div>
+            </div>
+            <div class="inline-actions">
+              <button class="btn btn-accent" id="advCreateBtn" type="button">Создать оффер</button>
+              <button class="btn btn-gray" id="advReloadBtn" type="button">Обновить</button>
+            </div>
+            <p class="muted pp-inline-hint" id="advStatusHint">—</p>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <h2>Офферы</h2>
+            </div>
+            <div class="planned-list" id="advOffersList"></div>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <script src="./advertiser.js"></script>
+  </body>
+</html>

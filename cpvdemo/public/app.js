@@ -20,7 +20,9 @@ const els = {
 
   weeklyPostLimit: document.getElementById("weeklyPostLimit"),
   modeAuto: document.getElementById("modeAuto"),
-  modePreapproval: document.getElementById("modePreapproval"),
+  modeAutoWithPrecheck: document.getElementById("modeAutoWithPrecheck"),
+  modeManualApproval: document.getElementById("modeManualApproval"),
+  modeManualPosting: document.getElementById("modeManualPosting"),
 
   scheduleTags: document.getElementById("scheduleTags"),
   openScheduleModal: document.getElementById("openScheduleModal"),
@@ -32,6 +34,8 @@ const els = {
   saveSettingsBtn: document.getElementById("saveSettingsBtn"),
   reloadStateBtn: document.getElementById("reloadStateBtn"),
   settingsSaveHint: document.getElementById("settingsSaveHint"),
+  plannedPostsList: document.getElementById("plannedPostsList"),
+  plannedPostsHint: document.getElementById("plannedPostsHint"),
 
   auctionStrategySlider: document.getElementById("auctionStrategySlider"),
   auctionStrategyLabels: Array.from(document.querySelectorAll("#auctionStrategyLabels span"))
@@ -167,13 +171,63 @@ function closeModal() {
 }
 
 function getSelectedMode() {
-  return els.modeAuto?.checked ? "auto" : "preapproval";
+  if (els.modeAuto?.checked) return "auto";
+  if (els.modeAutoWithPrecheck?.checked) return "auto_with_precheck";
+  if (els.modeManualApproval?.checked) return "manual_approval";
+  if (els.modeManualPosting?.checked) return "manual_posting";
+  return "auto_with_precheck";
 }
 
 function setSelectedMode(mode) {
-  const value = mode === "auto" ? "auto" : "preapproval";
+  const value = String(mode || "auto_with_precheck");
   if (els.modeAuto) els.modeAuto.checked = value === "auto";
-  if (els.modePreapproval) els.modePreapproval.checked = value === "preapproval";
+  if (els.modeAutoWithPrecheck) els.modeAutoWithPrecheck.checked = value === "auto_with_precheck";
+  if (els.modeManualApproval) els.modeManualApproval.checked = value === "manual_approval";
+  if (els.modeManualPosting) els.modeManualPosting.checked = value === "manual_posting";
+}
+
+function canCancelPost(status) {
+  return status === "pending_precheck" || status === "pending_approval" || status === "pending_manual_posting" || status === "scheduled";
+}
+
+function renderPlannedPosts(posts) {
+  const root = els.plannedPostsList;
+  if (!root) return;
+  root.innerHTML = "";
+
+  if (!Array.isArray(posts) || !posts.length) {
+    root.innerHTML = '<p class="muted">Пока нет запланированных публикаций.</p>';
+    setText(els.plannedPostsHint, "—");
+    return;
+  }
+
+  for (const item of posts) {
+    const row = document.createElement("div");
+    row.className = "planned-item";
+
+    const main = document.createElement("div");
+    main.className = "planned-main";
+    main.innerHTML =
+      `<div><strong>#${item.id}</strong></div>` +
+      `<div class="planned-meta">${item.scheduledAtText} • ${item.modeTitle || item.mode}</div>` +
+      `<div class="planned-meta">${item.statusTitle || item.status}</div>` +
+      `<div class="planned-meta">CPV: ${item.cpv} ₽ • Доход: ${item.estimatedIncome} ₽</div>` +
+      `<div class="planned-meta">${item.text || ""}</div>`;
+    row.appendChild(main);
+
+    if (canCancelPost(item.status)) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn btn-outline";
+      btn.dataset.offerId = String(item.id);
+      btn.textContent = "Отказаться";
+      row.appendChild(btn);
+    }
+
+    root.appendChild(row);
+  }
+
+  setText(els.plannedPostsHint, `Всего: ${posts.length}`);
 }
 
 function fillWeeklyPostLimitOptions() {
@@ -214,7 +268,7 @@ function renderState(state) {
   els.channelLinkInput.value = ch.username ? `https://t.me/${ch.username}` : "";
   els.adminLoginInput.value = ch?.blogger?.tgUsername ? `@${ch.blogger.tgUsername}` : "";
 
-  const mode = ch.postingMode || "preapproval";
+  const mode = ch.postingMode || "auto_with_precheck";
   setSelectedMode(mode);
 
   const limit = Number(
@@ -226,6 +280,7 @@ function renderState(state) {
 
   scheduleState = scheduleStateFromSlots(ch.scheduleSlots || []);
   renderScheduleTags();
+  renderPlannedPosts(state?.plannedPosts || []);
 
   const botUsername = state?.bot?.username || "";
   if (botUsername) {
@@ -314,6 +369,12 @@ async function applyPostingMode(mode) {
   }
 }
 
+async function cancelPlannedPost(offerId) {
+  await apiPost("/api/offers/cancel", { token: URL_TOKEN, offerId });
+  setText(els.settingsSaveHint, `Публикация #${offerId} отменена`);
+  await refreshState();
+}
+
 function removeTagRange(day, start, end) {
   for (let hour = start; hour < end; hour += 1) {
     scheduleState[day][hour] = false;
@@ -383,11 +444,37 @@ function bindEvents() {
       }
     });
   }
-  if (els.modePreapproval) {
-    els.modePreapproval.addEventListener("change", () => {
-      if (els.modePreapproval.checked) {
-        applyPostingMode("preapproval").catch(() => {});
+  if (els.modeAutoWithPrecheck) {
+    els.modeAutoWithPrecheck.addEventListener("change", () => {
+      if (els.modeAutoWithPrecheck.checked) {
+        applyPostingMode("auto_with_precheck").catch(() => {});
       }
+    });
+  }
+  if (els.modeManualApproval) {
+    els.modeManualApproval.addEventListener("change", () => {
+      if (els.modeManualApproval.checked) {
+        applyPostingMode("manual_approval").catch(() => {});
+      }
+    });
+  }
+  if (els.modeManualPosting) {
+    els.modeManualPosting.addEventListener("change", () => {
+      if (els.modeManualPosting.checked) {
+        applyPostingMode("manual_posting").catch(() => {});
+      }
+    });
+  }
+
+  if (els.plannedPostsList) {
+    els.plannedPostsList.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const offerId = Number(target.dataset.offerId || 0);
+      if (!offerId) return;
+      cancelPlannedPost(offerId).catch((e) => {
+        setText(els.settingsSaveHint, `Ошибка отмены: ${e?.message || String(e)}`);
+      });
     });
   }
 

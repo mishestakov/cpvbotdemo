@@ -32,7 +32,7 @@
       <main class="main">
         <header class="topbar">
           <h1 id="pageTitle">Редактирование канала</h1>
-          <a href="/cpvdemo/auth">Сменить канал</a>
+          <a href="/cpvdemo/advertiser">Кабинет рекламодателя</a>
         </header>
 
         <section class="content">
@@ -103,8 +103,10 @@
 
               <label>Режим публикации рекламы</label>
               <div class="pp-modeGroup">
-                <label class="check pp-modeOption"><input type="radio" name="postingMode" value="auto" id="modeAuto" /> Публиковать рекламу автоматически</label>
-                <label class="check pp-modeOption"><input type="radio" name="postingMode" value="preapproval" id="modePreapproval" /> Я хочу одобрять все рекламные посты самостоятельно.</label>
+                <label class="check pp-modeOption"><input type="radio" name="postingMode" value="auto" id="modeAuto" /> Автоматически</label>
+                <label class="check pp-modeOption"><input type="radio" name="postingMode" value="auto_with_precheck" id="modeAutoWithPrecheck" /> С предпросмотром (если не отклоню — выйдет)</label>
+                <label class="check pp-modeOption"><input type="radio" name="postingMode" value="manual_approval" id="modeManualApproval" /> Только после моего подтверждения</label>
+                <label class="check pp-modeOption"><input type="radio" name="postingMode" value="manual_posting" id="modeManualPosting" /> Ручная публикация</label>
               </div>
             </div>
           </article>
@@ -156,6 +158,11 @@
             <div class="form-grid">
               <label>Стоимость CPM ⓘ</label>
               <input class="control with-x" value="1 000 ₽" />
+            </div>
+            <div class="sub-block">
+              <div class="sub-title">Запланированные публикации</div>
+              <div class="planned-list" id="plannedPostsList"></div>
+              <p class="muted pp-inline-hint" id="plannedPostsHint">—</p>
             </div>
           </article>
 
