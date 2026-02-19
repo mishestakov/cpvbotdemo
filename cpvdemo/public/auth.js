@@ -6,10 +6,17 @@ const telegramLinks = window.TelegramLinks || null;
 
 let sessionToken = "";
 let pollTimer = null;
+let lastStatusText = "";
+
+const STATUS_OPEN_BOT =
+  "Откройте Telegram, нажмите Start и вернитесь в эту вкладку.";
 
 function setStatus(text) {
+  const nextText = String(text || "");
+  if (nextText === lastStatusText) return;
+  lastStatusText = nextText;
   if (els.authStatusText) {
-    els.authStatusText.textContent = String(text || "");
+    els.authStatusText.textContent = nextText;
   }
 }
 
@@ -38,15 +45,7 @@ function startPolling() {
     try {
       const row = await apiGet(`/api/auth/session?token=${encodeURIComponent(sessionToken)}`);
       if (row.status === "pending_start") {
-        setStatus("Откройте бота и нажмите Start.");
-        return;
-      }
-      if (row.status === "awaiting_channel") {
-        setStatus("В боте выберите канал, где вы администратор.");
-        return;
-      }
-      if (row.status === "connecting") {
-        setStatus("Подключаем канал. Это может занять несколько секунд...");
+        setStatus(STATUS_OPEN_BOT);
         return;
       }
       if (row.status === "connected") {
@@ -61,8 +60,8 @@ function startPolling() {
         setStatus("Сессия истекла. Обновите страницу, чтобы создать новую ссылку.");
         return;
       }
-      if (row.status === "error") {
-        setStatus(`Ошибка: ${row.error || "не удалось подключить канал"}`);
+      if (row.error) {
+        setStatus(`Ошибка: ${row.error}`);
       }
     } catch (e) {
       setStatus(`Ошибка проверки статуса: ${e?.message || String(e)}`);
@@ -87,7 +86,7 @@ async function boot() {
       els.authOpenBot.href = links.deep || links.web || "#";
       els.authOpenBot.dataset.deep = links.deep || "";
     }
-    setStatus("Ссылка готова. Откройте Telegram, нажмите Start и вернитесь в эту вкладку.");
+    setStatus(STATUS_OPEN_BOT);
     startPolling();
   } catch (e) {
     setStatus(`Не удалось создать auth-сессию: ${e?.message || String(e)}`);

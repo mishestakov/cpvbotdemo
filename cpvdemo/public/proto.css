@@ -350,56 +350,6 @@ input.control.with-x {
   line-height: 22px;
 }
 
-.pp-dmPanel {
-  border: 1px solid #d5deec;
-  border-radius: 14px;
-  background: #fff;
-  padding: 14px 16px;
-  display: grid;
-  gap: 10px;
-}
-
-.pp-dmState {
-  font-size: 15px;
-  font-weight: 600;
-  color: #4f627f;
-}
-
-.pp-dmStateOk {
-  color: #0f8e48;
-}
-
-.pp-dmStateWarn {
-  color: #8b6a00;
-}
-
-.pp-dmStateBad {
-  color: #b13e2a;
-}
-
-.pp-dmTitle {
-  margin: 0 0 6px;
-  font-size: 15px;
-  line-height: 20px;
-  color: #5c6d87;
-  font-weight: 600;
-}
-
-.pp-dmStep {
-  margin: 0;
-  font-size: 14px;
-  line-height: 20px;
-  color: #6d7f99;
-}
-
-.pp-dmReady {
-  margin: 0;
-  font-size: 15px;
-  line-height: 22px;
-  color: #0f8e48;
-  font-weight: 600;
-}
-
 .pp-inline-hint {
   margin-top: 10px;
 }

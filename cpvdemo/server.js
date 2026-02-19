@@ -396,18 +396,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (url.pathname === "/api/channel/recheck" && req.method === "POST") {
-    const body = await readJsonBody(req);
-    if (String(body.token || "") !== CPVDEMO_TOKEN) {
-      sendJson(res, 404, { error: "Not found" });
-      return;
-    }
-
-    channelState.status = "ready";
-    sendJson(res, 200, { ok: true });
-    return;
-  }
-
   if (url.pathname === "/api/channel/settings" && req.method === "POST") {
     const body = await readJsonBody(req);
     if (String(body.token || "") !== CPVDEMO_TOKEN) {

@@ -22,12 +22,6 @@ const els = {
   modeAuto: document.getElementById("modeAuto"),
   modePreapproval: document.getElementById("modePreapproval"),
 
-  dmPanel: document.getElementById("dmPanel"),
-  dmState: document.getElementById("dmState"),
-  dmInstructionBox: document.getElementById("dmInstructionBox"),
-  recheckDmBtn: document.getElementById("recheckDmBtn"),
-  dmReadyText: document.getElementById("dmReadyText"),
-
   scheduleTags: document.getElementById("scheduleTags"),
   openScheduleModal: document.getElementById("openScheduleModal"),
   scheduleModal: document.getElementById("scheduleModal"),
@@ -44,7 +38,6 @@ const els = {
 };
 
 let latestState = null;
-let currentChannel = null;
 let scheduleState = createDefaultScheduleState();
 let draftState = createDefaultScheduleState();
 let modeUpdateInFlight = false;
@@ -183,82 +176,6 @@ function setSelectedMode(mode) {
   if (els.modePreapproval) els.modePreapproval.checked = value === "preapproval";
 }
 
-function dmUiFromChannel(ch) {
-  if (!ch) {
-    return {
-      stateText: "Канал не подключен",
-      isReady: false,
-      kind: "bad"
-    };
-  }
-  if (ch.status === "ready") {
-    return {
-      stateText: "Direct Messages настроены",
-      isReady: true,
-      kind: "ok"
-    };
-  }
-  if (ch.status === "dm_disabled") {
-    return {
-      stateText: "DM не настроены",
-      isReady: false,
-      kind: "bad"
-    };
-  }
-  if (ch.status === "dm_price_nonzero") {
-    return {
-      stateText: "Входящие сообщения не бесплатные",
-      isReady: false,
-      kind: "bad"
-    };
-  }
-  if (ch.status === "checking") {
-    return {
-      stateText: "Проверяем статус DM...",
-      isReady: false,
-      kind: "warn"
-    };
-  }
-  return {
-    stateText: ch?.lastError?.message || "Ошибка проверки канала",
-    isReady: false,
-    kind: "bad"
-  };
-}
-
-function renderDmPanel(ch) {
-  const modeUi = getSelectedMode();
-  const modeStored = ch?.postingMode === "auto" ? "auto" : "preapproval";
-  const mode = modeUi === "auto" || modeStored === "auto" ? "auto" : "preapproval";
-  if (!els.dmPanel) return;
-
-  if (mode !== "preapproval") {
-    els.dmPanel.hidden = true;
-    els.dmPanel.style.display = "none";
-    if (els.dmInstructionBox) els.dmInstructionBox.hidden = true;
-    if (els.dmReadyText) els.dmReadyText.hidden = true;
-    return;
-  }
-
-  els.dmPanel.hidden = false;
-  els.dmPanel.style.display = "grid";
-  const dm = dmUiFromChannel(ch);
-  setText(els.dmState, dm.stateText);
-  els.dmState?.classList.remove("pp-dmStateOk", "pp-dmStateWarn", "pp-dmStateBad");
-  if (dm.kind === "ok") els.dmState?.classList.add("pp-dmStateOk");
-  if (dm.kind === "warn") els.dmState?.classList.add("pp-dmStateWarn");
-  if (dm.kind === "bad") els.dmState?.classList.add("pp-dmStateBad");
-
-  const showDmSetupInstruction = ch?.status === "dm_disabled";
-  if (dm.isReady) {
-    els.dmInstructionBox.hidden = true;
-    els.dmReadyText.hidden = false;
-  } else {
-    els.dmInstructionBox.hidden = !showDmSetupInstruction;
-    els.dmReadyText.hidden = true;
-  }
-}
-
 function fillWeeklyPostLimitOptions() {
   if (!els.weeklyPostLimit) return;
   els.weeklyPostLimit.innerHTML = "";
@@ -284,7 +201,6 @@ function updateStrategySlider() {
 function renderState(state) {
   latestState = state;
   const ch = Array.isArray(state?.channels) && state.channels.length ? state.channels[0] : null;
-  currentChannel = ch;
 
   if (!ch) {
     setText(els.pageTitle, "Редактирование канала");
@@ -310,7 +226,6 @@ function renderState(state) {
 
   scheduleState = scheduleStateFromSlots(ch.scheduleSlots || []);
   renderScheduleTags();
-  renderDmPanel(ch);
 
   const botUsername = state?.bot?.username || "";
   if (botUsername) {
@@ -319,7 +234,7 @@ function renderState(state) {
       els.openBotBtn.disabled = false;
     }
   } else {
-    setText(els.botHint, "Не задан TELEGRAM_BOT_TOKEN / TELEGRAM_BOT_USERNAME");
+    setText(els.botHint, "Бот недоступен. Проверьте BOT_TOKEN и webhook в .env.");
     if (els.openBotBtn) {
       els.openBotBtn.disabled = true;
     }
@@ -389,30 +304,13 @@ async function applyPostingMode(mode) {
   modeUpdateInFlight = true;
   try {
     await apiPost("/api/channel/mode", { token: URL_TOKEN, mode });
-    if (mode === "preapproval") {
-      await recheckDmStatus();
-    } else {
-      setText(els.settingsSaveHint, "Режим публикации обновлён");
-      await refreshState();
-    }
+    setText(els.settingsSaveHint, "Режим публикации обновлён");
+    await refreshState();
   } catch (e) {
     alert(e?.message || String(e));
     await refreshState().catch(() => {});
   } finally {
     modeUpdateInFlight = false;
-  }
-}
-
-async function recheckDmStatus() {
-  if (els.recheckDmBtn) els.recheckDmBtn.disabled = true;
-  try {
-    await apiPost("/api/channel/recheck", { token: URL_TOKEN });
-    setText(els.settingsSaveHint, "Проверка запущена...");
-    await refreshState();
-  } catch (e) {
-    alert(e?.message || String(e));
-  } finally {
-    if (els.recheckDmBtn) els.recheckDmBtn.disabled = false;
   }
 }
 
@@ -480,7 +378,6 @@ function bindEvents() {
 
   if (els.modeAuto) {
     els.modeAuto.addEventListener("change", () => {
-      renderDmPanel(currentChannel);
       if (els.modeAuto.checked) {
         applyPostingMode("auto").catch(() => {});
       }
@@ -488,16 +385,9 @@ function bindEvents() {
   }
   if (els.modePreapproval) {
     els.modePreapproval.addEventListener("change", () => {
-      renderDmPanel(currentChannel);
       if (els.modePreapproval.checked) {
         applyPostingMode("preapproval").catch(() => {});
       }
-    });
-  }
-
-  if (els.recheckDmBtn) {
-    els.recheckDmBtn.addEventListener("click", () => {
-      recheckDmStatus().catch(() => {});
     });
   }
 

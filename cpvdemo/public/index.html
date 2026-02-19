@@ -64,11 +64,6 @@
               <label>Название канала</label>
               <input class="control with-x" id="channelTitleInput" readonly />
 
-              <label>Тематика канала</label>
-              <select class="control select" id="channelTopic" aria-label="Тематика канала">
-                <option>Блоги</option>
-              </select>
-
               <label>Ссылка ⓘ</label>
               <input class="control with-x" id="channelLinkInput" readonly />
 
@@ -110,17 +105,6 @@
               <div class="pp-modeGroup">
                 <label class="check pp-modeOption"><input type="radio" name="postingMode" value="auto" id="modeAuto" /> Публиковать рекламу автоматически</label>
                 <label class="check pp-modeOption"><input type="radio" name="postingMode" value="preapproval" id="modePreapproval" /> Я хочу одобрять все рекламные посты самостоятельно.</label>
-              </div>
-
-              <label></label>
-              <div class="pp-dmPanel" id="dmPanel" hidden>
-                <div class="pp-dmState" id="dmState">—</div>
-                <div id="dmInstructionBox">
-                  <p class="pp-dmTitle">Настройте получение Direct Messages в канале.</p>
-                  <p class="pp-dmStep">1. Настройки канала → Управление → Сообщения каналу → Принимать сообщения: да, Стоимость: 0.</p>
-                  <button class="btn btn-outline" type="button" id="recheckDmBtn">Проверить</button>
-                </div>
-                <p class="pp-dmReady" id="dmReadyText" hidden>Запросы на публикацию будут приходить в личные сообщения канала.</p>
               </div>
             </div>
           </article>
