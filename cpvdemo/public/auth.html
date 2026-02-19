@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <title>CPV Demo - Авторизация канала</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="./proto.css" />
+  </head>
+  <body>
+    <main class="pp-authPage">
+      <section class="pp-authCard">
+        <h1>Подключение Telegram-канала</h1>
+        <p class="muted">Нажмите кнопку ниже, перейдите в бота и выберите канал, в котором вы администратор.</p>
+        <a id="authOpenBot" class="btn btn-accent pp-authBtn" href="#" target="_blank" rel="noopener noreferrer">Перейти в Telegram</a>
+        <p class="muted pp-inline-hint" id="authStatusText">Создаем сессию авторизации...</p>
+      </section>
+    </main>
+
+    <script src="./auth.js"></script>
+  </body>
+</html>

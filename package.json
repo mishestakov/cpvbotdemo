@@ -1,0 +1,25 @@
+{
+  "name": "cpvbotdemo",
+  "version": "1.0.0",
+  "description": "CPV bot demo",
+  "main": "cpvdemo/server.js",
+  "scripts": {
+    "start:cpvdemo": "node cpvdemo/server.js",
+    "start": "node cpvdemo/server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mishestakov/cpvbotdemo.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/mishestakov/cpvbotdemo/issues"
+  },
+  "homepage": "https://github.com/mishestakov/cpvbotdemo#readme",
+  "dependencies": {
+    "dotenv": "^17.3.1"
+  }
+}

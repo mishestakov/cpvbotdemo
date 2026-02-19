@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <title>CPV Demo - Рекламная сеть</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="./proto.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-logo" aria-hidden="true"></span>
+          <span class="brand-text">Рекламная сеть</span>
+        </div>
+        <nav class="menu">
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Дашборд</span></a>
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Уведомления</span></a>
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Реклама на сайтах</span></a>
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Реклама в приложениях</span></a>
+          <a href="#" class="menu-item active"><span class="menu-icon"></span><span>Реклама в Telegram</span></a>
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Статистика</span></a>
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Документы</span></a>
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Дополнительно</span></a>
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Настройки</span></a>
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Adfox</span></a>
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>РСЯ для блогеров</span></a>
+        </nav>
+        <div class="sidebar-caret">‹</div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <h1 id="pageTitle">Редактирование канала</h1>
+          <a href="/cpvdemo/auth">Сменить канал</a>
+        </header>
+
+        <section class="content">
+          <article class="card">
+            <h2>Добавьте бота в Telegram</h2>
+            <div class="two-cols">
+              <div>
+                <h3>1. Перезапросите бота</h3>
+                <button class="btn btn-accent" id="reconnectBotBtn" type="button">Перезапросить ↻</button>
+              </div>
+              <div>
+                <h3>2. Добавьте бота в канал</h3>
+                <p class="muted">
+                  Перейдите в описание бота, нажмите «Добавить в группу или канал» и выберите свой канал. Если у вас открытый канал — разрешите боту
+                  публиковать сообщения в канале и назначьте его администратором. Если у вас частный канал — разрешите боту публиковать сообщения и
+                  добавлять подписчиков и назначьте его администратором.
+                </p>
+                <button class="btn btn-gray" id="openBotBtn" type="button">Перейти в Telegram</button>
+                <p class="muted pp-inline-hint" id="botHint">—</p>
+              </div>
+            </div>
+          </article>
+
+          <article class="card">
+            <h2>Настройки канала</h2>
+            <p class="muted">Параметры подтягиваются автоматически после авторизации через Telegram-бота.</p>
+
+            <div class="form-grid">
+              <label>Название канала</label>
+              <input class="control with-x" id="channelTitleInput" readonly />
+
+              <label>Тематика канала</label>
+              <select class="control select" id="channelTopic" aria-label="Тематика канала">
+                <option>Блоги</option>
+              </select>
+
+              <label>Ссылка ⓘ</label>
+              <input class="control with-x" id="channelLinkInput" readonly />
+
+              <label>Логин администратора ⓘ</label>
+              <input class="control with-x" id="adminLoginInput" readonly />
+            </div>
+          </article>
+
+          <article class="card">
+            <h2>Настройки показов рекламы</h2>
+            <div class="tabs">
+              <button class="tab active">Общие</button>
+              <button class="tab">Блокировки</button>
+            </div>
+
+            <div class="form-grid">
+              <label class="label-with-help">
+                <span>Максимальное количество постов в неделю</span>
+                <button class="hint" type="button" aria-label="Подсказка по количеству публикаций">
+                  ⓘ
+                  <span class="hint-popup">Выберите значение от 1 до 28. Публикуем не более 4 рекламных постов в день</span>
+                </button>
+              </label>
+              <select class="control select small" id="weeklyPostLimit" aria-label="Максимальное количество постов в неделю"></select>
+
+              <label class="label-with-help">
+                <span>Время публикации рекламы</span>
+                <button class="hint" type="button" aria-label="Подсказка по времени публикации">
+                  ⓘ
+                  <span class="hint-popup">Среднее время обновления расписания составляет около двух часов</span>
+                </button>
+              </label>
+              <div class="schedule">
+                <div class="schedule-tags" id="scheduleTags"></div>
+                <button class="btn btn-outline" type="button" id="openScheduleModal">Изменить</button>
+              </div>
+
+              <label>Режим публикации рекламы</label>
+              <div class="pp-modeGroup">
+                <label class="check pp-modeOption"><input type="radio" name="postingMode" value="auto" id="modeAuto" /> Публиковать рекламу автоматически</label>
+                <label class="check pp-modeOption"><input type="radio" name="postingMode" value="preapproval" id="modePreapproval" /> Я хочу одобрять все рекламные посты самостоятельно.</label>
+              </div>
+
+              <label></label>
+              <div class="pp-dmPanel" id="dmPanel" hidden>
+                <div class="pp-dmState" id="dmState">—</div>
+                <div id="dmInstructionBox">
+                  <p class="pp-dmTitle">Настройте получение Direct Messages в канале.</p>
+                  <p class="pp-dmStep">1. Настройки канала → Управление → Сообщения каналу → Принимать сообщения: да, Стоимость: 0.</p>
+                  <button class="btn btn-outline" type="button" id="recheckDmBtn">Проверить</button>
+                </div>
+                <p class="pp-dmReady" id="dmReadyText" hidden>Запросы на публикацию будут приходить в личные сообщения канала.</p>
+              </div>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <h2>Аукционная модель</h2>
+              <label class="switch"><input type="checkbox" checked /><span></span></label>
+            </div>
+
+            <div class="form-grid">
+              <label>CPM стратегия ⓘ</label>
+              <select class="control select" aria-label="CPM стратегия">
+                <option>Порог CPM</option>
+              </select>
+
+              <label>Минимальный CPM ⓘ</label>
+              <input class="control with-x" value="599 ₽" />
+            </div>
+
+            <div class="sub-block">
+              <div class="sub-title">Стратегия подбора рекламы</div>
+              <div class="auction-row">
+                <span>По тематике</span>
+                <span>По доходу</span>
+              </div>
+              <div class="auction-slider-wrap">
+                <input class="auction-slider" id="auctionStrategySlider" type="range" min="0" max="4" value="2" step="1" />
+              </div>
+              <div class="auction-note" id="auctionStrategyLabels">
+                <span data-index="0">Наибольшее соответствие</span>
+                <span data-index="1">Среднее соответствие</span>
+                <span data-index="2">Равновесная стратегия</span>
+                <span data-index="3">Оптимальная стратегия</span>
+                <span data-index="4">Максимальный доход</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <h2>Биржевая модель</h2>
+              <div class="head-right">
+                <span class="chip">Beta</span>
+                <label class="switch"><input type="checkbox" checked /><span></span></label>
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <label>Стоимость CPM ⓘ</label>
+              <input class="control with-x" value="1 000 ₽" />
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <h2>Прямая продажа в Telegram</h2>
+              <span class="chip">Beta</span>
+            </div>
+            <p class="muted">Теперь вы можете размещать рекламные кампании прямых продаж и собственное промо.</p>
+            <div class="inline-actions">
+              <button class="btn btn-gray">Перейти к площадке</button>
+              <a href="#" class="place-id">ID 1562262 ⧉</a>
+            </div>
+          </article>
+
+          <div class="footer-actions">
+            <button class="btn btn-accent" id="saveSettingsBtn" type="button">Сохранить</button>
+            <button class="btn btn-gray" id="reloadStateBtn" type="button">Отменить</button>
+          </div>
+          <p class="muted pp-inline-hint" id="settingsSaveHint">—</p>
+
+          <footer class="footer">
+            <span>© 2006—2026 Яндекс</span>
+            <a href="#">Канал РСЯ</a>
+            <a href="#">Правила участия</a>
+            <a href="#">Вакансии</a>
+          </footer>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal-overlay" id="scheduleModal" aria-hidden="true">
+      <div class="modal-window" role="dialog" aria-modal="true" aria-labelledby="scheduleModalTitle">
+        <h3 id="scheduleModalTitle">Расписание показов</h3>
+        <p class="modal-text">
+          В сутки может выходить до четырёх рекламных объявлений по всем моделям монетизации. Посты публикуются случайным образом в заданные слоты.
+        </p>
+        <p class="modal-text">Чем больше выбрано слотов, тем выше шанс выхода объявлений. Рекламные посты чередуются с авторскими и не публикуются подряд.</p>
+
+        <div class="schedule-matrix-wrap">
+          <table class="schedule-matrix" id="scheduleMatrix">
+            <thead>
+              <tr>
+                <th></th>
+                <th>0</th>
+                <th>1</th>
+                <th>2</th>
+                <th>3</th>
+                <th>4</th>
+                <th>5</th>
+                <th>6</th>
+                <th>7</th>
+                <th>8</th>
+                <th>9</th>
+                <th>10</th>
+                <th>11</th>
+                <th>12</th>
+                <th>13</th>
+                <th>14</th>
+                <th>15</th>
+                <th>16</th>
+                <th>17</th>
+                <th>18</th>
+                <th>19</th>
+                <th>20</th>
+                <th>21</th>
+                <th>22</th>
+                <th>23</th>
+              </tr>
+            </thead>
+            <tbody id="scheduleMatrixBody"></tbody>
+          </table>
+        </div>
+
+        <div class="modal-bottom">
+          <div class="timezone">
+            <span class="timezone-label">Часовой пояс</span>
+            <span>Москва (UTC +3:00)</span>
+          </div>
+          <div class="matrix-legend">
+            <span><i class="legend-free"></i>Свободные слоты</span>
+            <span><i class="legend-busy"></i>Рекламные слоты</span>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn btn-accent" type="button" id="saveScheduleBtn">Сохранить</button>
+          <button class="btn btn-gray" type="button" id="cancelScheduleBtn">Отмена</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
