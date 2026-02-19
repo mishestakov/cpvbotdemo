@@ -21,6 +21,7 @@ const WEBHOOK_SECRET_TOKEN = String(process.env.WEBHOOK_SECRET_TOKEN || "").trim
 const WEBHOOK_PATH = "/api/telegram/webhook";
 
 const BOT_API_TIMEOUT_MS = parseMsEnv("BOT_API_TIMEOUT_MS", 10_000, 3_000);
+const BOT_CONNECT_RETRY_INTERVAL_MS = parseMsEnv("BOT_CONNECT_RETRY_INTERVAL_MS", 5_000, 1_000);
 const AUTH_SESSION_TTL_MS = parseMsEnv("AUTH_SESSION_TTL_MS", 30 * 60 * 1000, 60_000);
 
 const channelState = {
@@ -64,6 +65,22 @@ function formatError(err) {
   const cause = err?.cause?.message;
   const causeText = cause ? ` cause=${cause}` : "";
   return `${message}${codeText}${descriptionText}${causeText}`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientNetworkError(err) {
+  const code = String(err?.code || err?.cause?.code || "").toUpperCase();
+  return (
+    code === "ETIMEDOUT" ||
+    code === "ECONNRESET" ||
+    code === "ECONNREFUSED" ||
+    code === "EAI_AGAIN" ||
+    code === "ENOTFOUND" ||
+    code === "UND_ERR_CONNECT_TIMEOUT"
+  );
 }
 
 function buildDefaultScheduleSlots() {
@@ -211,6 +228,25 @@ async function tgApi(method, payload = {}) {
   return json.result;
 }
 
+async function tgApiWithRetry(method, payload = {}) {
+  const delays = [700, 1500];
+  let lastError = null;
+  for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    try {
+      return await tgApi(method, payload);
+    } catch (err) {
+      lastError = err;
+      if (!isTransientNetworkError(err) || attempt === delays.length) {
+        throw err;
+      }
+      const delayMs = delays[attempt];
+      console.warn(`Bot API ${method} transient error (${formatError(err)}), retry in ${delayMs}ms`);
+      await sleep(delayMs);
+    }
+  }
+  throw lastError || new Error(`Bot API ${method} failed`);
+}
+
 async function sendBotMessage(chatId, text) {
   if (!chatId) return;
   try {
@@ -273,7 +309,7 @@ async function startBot() {
       throw new Error("WEBHOOK_SECRET_TOKEN is missing. Set a random secret in .env");
     }
 
-    const me = await tgApi("getMe", {});
+    const me = await tgApiWithRetry("getMe", {});
     botState.username = me?.username || null;
 
     const webhookUrl = `${WEBHOOK_BASE_URL}${WEBHOOK_PATH}`;
@@ -285,7 +321,7 @@ async function startBot() {
       secret_token: WEBHOOK_SECRET_TOKEN
     };
 
-    await tgApi("setWebhook", payload);
+    await tgApiWithRetry("setWebhook", payload);
 
     botState.enabled = true;
     botState.lastError = null;
@@ -442,7 +478,7 @@ async function boot() {
       botState.enabled = false;
       botState.lastError = formatError(err);
     });
-  }, 15_000);
+  }, BOT_CONNECT_RETRY_INTERVAL_MS);
   retryTimer.unref();
 
   const shutdown = () => {
