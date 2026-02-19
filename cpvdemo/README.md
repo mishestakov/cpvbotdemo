@@ -22,6 +22,27 @@ npm run start:cpvdemo
 
 ## Важно
 - Для auth через Telegram нужен `BOT_TOKEN` в `.env`.
-- Для long-polling Telegram допускается только один активный процесс на токен. Если увидите `409 Conflict`, остановите другой процесс, который читает updates этого бота.
+- Сервер работает в webhook-режиме (без long polling).
+- Нужен публичный HTTPS URL (например, ngrok) и `WEBHOOK_BASE_URL` в `.env`.
+- `WEBHOOK_SECRET_TOKEN` обязателен: сервер проверяет заголовок `x-telegram-bot-api-secret-token`.
+- После смены ngrok URL перезапустите `npm run start:cpvdemo`, чтобы заново вызвать `setWebhook`.
 - Это UI-демо + минимальная bot-auth и mock API.
 - Логика TDLib и продовая backend-интеграция не переносились.
+
+## Быстрый пример с ngrok
+```bash
+# Терминал 1
+npm run start:cpvdemo
+
+# Терминал 2
+ngrok http 3030
+```
+
+Возьмите HTTPS адрес из ngrok и пропишите в `.env`:
+```bash
+WEBHOOK_BASE_URL=https://<your-subdomain>.ngrok-free.app
+```
+Затем перезапустите сервис:
+```bash
+npm run start:cpvdemo
+```

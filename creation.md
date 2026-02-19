@@ -89,3 +89,48 @@
   - найдено, что на `/cpvdemo/auth` статика запрашивалась как `/cpvdemo/proto.css` и `/cpvdemo/auth.js`, а сервер отдавал `404`;
   - исправлен роутинг статики в `cpvdemo/server.js` (префикс `/cpvdemo/` теперь корректно мапится в `public/*`).
 - Результат проверки: верстка и скрипты грузятся; в Playwright страница отображается корректно.
+
+### 2026-02-19T13:10:55+03:00
+- Запрос пользователя: повторить сценарий через Playwright и перенести поведение Telegram launch-страницы (сразу открывать приложение).
+- Что сделано:
+  - через Playwright проверена страница `https://t.me/yaPostPlannerBot?start=...`, зафиксирован deep-link кнопки: `tg://resolve?domain=...&start=...`;
+  - в `cpvdemo/public/auth.js` добавена генерация deep-link и переход в Telegram-приложение напрямую;
+  - в `cpvdemo/public/app.js` кнопка открытия бота переведена на тот же deep-link-паттерн;
+  - из `cpvdemo/public/auth.html` убран `target=\"_blank\"`, чтобы не открывалось лишнее браузерное окно;
+  - обновлен статусный текст с инструкцией вернуться во вкладку после `/start`.
+- Результат проверки: Playwright показывает, что кнопка на `/cpvdemo/auth` теперь ведет на `tg://resolve?...`.
+
+### 2026-02-19T13:12:24+03:00
+- Запрос пользователя: проверить, есть ли на `t.me` JS-таймаут и fallback-механика при открытии приложения.
+- Что сделано:
+  - через Playwright извлечен inline-скрипт launch-страницы `t.me`;
+  - подтверждено: есть `protoUrl = tg://resolve...` и `setTimeout(...)` для попытки открытия приложения;
+  - явного авто-fallback на `https://t.me/...` в этом скрипте нет (есть отдельные кнопки/ссылки на download);
+  - поведение в `cpvdemo/public/auth.js` и `cpvdemo/public/app.js` приведено к этому паттерну: удален автоматический web-fallback.
+- Результат: кнопки используют только deep-link `tg://resolve?...`, без принудительного перехода на web-заглушку.
+
+### 2026-02-19T13:26:12+03:00
+- Запрос пользователя: перевести подключение бота на webhook и подключить через предоставленный ngrok URL.
+- Что сделано:
+  - `cpvdemo/server.js` переведен с long polling на webhook-прием апдейтов (`/api/telegram/webhook` + `setWebhook`);
+  - добавлены env-параметры `WEBHOOK_BASE_URL`, `WEBHOOK_SECRET_TOKEN` в `.env.example`;
+  - обновлен `cpvdemo/README.md` с инструкцией по ngrok;
+  - в `.env` локально установлен `WEBHOOK_BASE_URL=https://deleterious-marvin-phonolitic.ngrok-free.dev`;
+  - проверено `getWebhookInfo`: webhook установлен на `https://deleterious-marvin-phonolitic.ngrok-free.dev/api/telegram/webhook`;
+  - проверен `api/auth/session`: сессия создается корректно;
+  - проверен webhook endpoint локально тестовым update: auth-сессия переводится в `connected`.
+- Наблюдение: на старте возможны transient `ETIMEDOUT`; ретрай через 15 секунд поднимает подключение.
+
+### 2026-02-19T13:41:30+03:00
+- Запрос пользователя: исправить review-замечания (`P1`, `P2`), убрать дублирование link-builder кода и проставить случайный `WEBHOOK_SECRET_TOKEN` в локальный `.env`.
+- Что сделано:
+  - `P1`: `WEBHOOK_SECRET_TOKEN` сделан обязательным для старта, `setWebhook` всегда отправляет `secret_token`, webhook endpoint всегда проверяет заголовок `x-telegram-bot-api-secret-token`;
+  - `P2`: добавлен безопасный парсинг `BOT_API_TIMEOUT_MS`/`AUTH_SESSION_TTL_MS` через `parseMsEnv` (защита от `NaN`);
+  - вынесена общая логика telegram deep-link в `cpvdemo/public/telegram-links.js`, дубли из `auth.js`/`app.js` удалены;
+  - обновлены `cpvdemo/public/auth.html` и `cpvdemo/public/index.html` для подключения общего скрипта;
+  - обновлены `.env.example` и `cpvdemo/README.md`: `WEBHOOK_SECRET_TOKEN` теперь обязательный;
+  - в локальный `.env` сгенерирован и записан случайный `WEBHOOK_SECRET_TOKEN`.
+- Результат проверки:
+  - бот поднимается в webhook-режиме;
+  - неверный secret на `/api/telegram/webhook` даёт `403`;
+  - корректный secret даёт `200`.

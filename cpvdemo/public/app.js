@@ -3,6 +3,7 @@ if (!URL_TOKEN) {
   location.replace("/cpvdemo/auth");
   throw new Error("Missing token");
 }
+const telegramLinks = window.TelegramLinks || null;
 
 const dayLabels = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"];
 const hoursCount = 24;
@@ -516,8 +517,8 @@ function bindEvents() {
     els.openBotBtn.addEventListener("click", () => {
       const username = latestState?.bot?.username;
       if (!username) return;
-      const url = `https://t.me/${username}?start=${encodeURIComponent(URL_TOKEN)}`;
-      window.open(url, "_blank", "noopener,noreferrer");
+      const links = telegramLinks?.buildFromUsernameStart(username, URL_TOKEN);
+      telegramLinks?.openDeepLink(links?.deep || "");
     });
   }
 

@@ -14,8 +14,14 @@ const HOST = String(process.env.HOST || "127.0.0.1");
 const PORT = Number(process.env.PORT || 3030);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CPVDEMO_TOKEN = "cpvdemo-token";
+
 const BOT_TOKEN = String(process.env.BOT_TOKEN || "").trim();
-const AUTH_SESSION_TTL_MS = Math.max(60_000, Number(process.env.AUTH_SESSION_TTL_MS || 30 * 60 * 1000));
+const WEBHOOK_BASE_URL = String(process.env.WEBHOOK_BASE_URL || "").trim().replace(/\/+$/, "");
+const WEBHOOK_SECRET_TOKEN = String(process.env.WEBHOOK_SECRET_TOKEN || "").trim();
+const WEBHOOK_PATH = "/api/telegram/webhook";
+
+const BOT_API_TIMEOUT_MS = parseMsEnv("BOT_API_TIMEOUT_MS", 10_000, 3_000);
+const AUTH_SESSION_TTL_MS = parseMsEnv("AUTH_SESSION_TTL_MS", 30 * 60 * 1000, 60_000);
 
 const channelState = {
   key: "@demo_channel",
@@ -34,16 +40,19 @@ const authSessions = new Map();
 const botState = {
   enabled: false,
   username: null,
-  lastError: null
+  lastError: null,
+  delivery: "webhook",
+  webhookUrl: WEBHOOK_BASE_URL ? `${WEBHOOK_BASE_URL}${WEBHOOK_PATH}` : null
 };
 
 let botLaunchInFlight = false;
-let botPollRunning = false;
-let botPollAbort = null;
-let botUpdateOffset = 0;
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function parseMsEnv(name, fallbackMs, minMs) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return fallbackMs;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return fallbackMs;
+  return Math.max(minMs, Math.floor(value));
 }
 
 function formatError(err) {
@@ -133,7 +142,9 @@ function snapshot(token) {
     bot: {
       enabled: botState.enabled,
       username: botState.username,
-      lastError: botState.lastError
+      lastError: botState.lastError,
+      delivery: botState.delivery,
+      webhookUrl: botState.webhookUrl
     },
     channels: token === CPVDEMO_TOKEN ? [channelState] : []
   };
@@ -163,14 +174,19 @@ function serveStatic(req, res, url) {
   });
 }
 
-async function tgApi(method, payload = {}, signal) {
+function botApiUrl(method) {
+  return `https://api.telegram.org/bot${BOT_TOKEN}/${method}`;
+}
+
+async function tgApi(method, payload = {}) {
   if (!BOT_TOKEN) {
     const err = new Error("BOT_TOKEN is missing");
     err.code = "BOT_TOKEN_MISSING";
     throw err;
   }
 
-  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
+  const signal = AbortSignal.timeout(BOT_API_TIMEOUT_MS);
+  const res = await fetch(botApiUrl(method), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload || {}),
@@ -238,39 +254,10 @@ async function handleStartMessage(message) {
   await sendBotMessage(chatId, "Канал авторизован. Возвращайтесь в браузер, страница обновится автоматически.");
 }
 
-async function pollBotUpdates(signal) {
-  while (!signal.aborted) {
-    try {
-      const updates = await tgApi(
-        "getUpdates",
-        {
-          timeout: 25,
-          offset: botUpdateOffset,
-          allowed_updates: ["message"]
-        },
-        signal
-      );
-
-      botState.enabled = true;
-      botState.lastError = null;
-
-      for (const update of Array.isArray(updates) ? updates : []) {
-        const updateId = Number(update?.update_id);
-        if (Number.isInteger(updateId)) {
-          botUpdateOffset = updateId + 1;
-        }
-
-        const text = String(update?.message?.text || "");
-        if (/^\/start(?:@\w+)?/i.test(text)) {
-          await handleStartMessage(update.message);
-        }
-      }
-    } catch (err) {
-      if (signal.aborted) return;
-      botState.enabled = false;
-      botState.lastError = formatError(err);
-      await sleep(2000);
-    }
+async function processTelegramUpdate(update) {
+  const text = String(update?.message?.text || "");
+  if (/^\/start(?:@\w+)?/i.test(text)) {
+    await handleStartMessage(update.message);
   }
 }
 
@@ -279,25 +266,30 @@ async function startBot() {
   botLaunchInFlight = true;
 
   try {
-    const me = await tgApi("getMe", {});
-    botState.username = me?.username || null;
-    botState.enabled = true;
-    botState.lastError = null;
-
-    if (!botPollRunning) {
-      botPollAbort = new AbortController();
-      botPollRunning = true;
-      pollBotUpdates(botPollAbort.signal)
-        .catch((err) => {
-          botState.enabled = false;
-          botState.lastError = formatError(err);
-        })
-        .finally(() => {
-          botPollRunning = false;
-        });
+    if (!WEBHOOK_BASE_URL) {
+      throw new Error("WEBHOOK_BASE_URL is missing. Start ngrok and set WEBHOOK_BASE_URL in .env");
+    }
+    if (!WEBHOOK_SECRET_TOKEN) {
+      throw new Error("WEBHOOK_SECRET_TOKEN is missing. Set a random secret in .env");
     }
 
-    console.log(`Bot connected: @${botState.username || "unknown"}`);
+    const me = await tgApi("getMe", {});
+    botState.username = me?.username || null;
+
+    const webhookUrl = `${WEBHOOK_BASE_URL}${WEBHOOK_PATH}`;
+    botState.webhookUrl = webhookUrl;
+
+    const payload = {
+      url: webhookUrl,
+      allowed_updates: ["message"],
+      secret_token: WEBHOOK_SECRET_TOKEN
+    };
+
+    await tgApi("setWebhook", payload);
+
+    botState.enabled = true;
+    botState.lastError = null;
+    console.log(`Bot connected: @${botState.username || "unknown"}; webhook=${webhookUrl}`);
   } catch (err) {
     botState.enabled = false;
     botState.lastError = formatError(err);
@@ -310,6 +302,21 @@ async function startBot() {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   markExpiredSessions();
+
+  if (url.pathname === WEBHOOK_PATH && req.method === "POST") {
+    const got = String(req.headers["x-telegram-bot-api-secret-token"] || "");
+    if (got !== WEBHOOK_SECRET_TOKEN) {
+      sendText(res, 403, "Forbidden");
+      return;
+    }
+
+    const update = await readJsonBody(req);
+    sendJson(res, 200, { ok: true });
+    processTelegramUpdate(update).catch((err) => {
+      botState.lastError = formatError(err);
+    });
+    return;
+  }
 
   if (url.pathname === "/api/state" && req.method === "GET") {
     const token = String(url.searchParams.get("token") || "").trim();
@@ -442,7 +449,7 @@ async function boot() {
   const retryTimer = setInterval(() => {
     if (!BOT_TOKEN) return;
     if (botLaunchInFlight) return;
-    if (botPollRunning && botState.enabled) return;
+    if (botState.enabled) return;
     startBot().catch((err) => {
       botState.enabled = false;
       botState.lastError = formatError(err);
@@ -452,13 +459,6 @@ async function boot() {
 
   const shutdown = () => {
     clearInterval(retryTimer);
-    if (botPollAbort) {
-      try {
-        botPollAbort.abort();
-      } catch {
-        // ignore
-      }
-    }
     server.close(() => process.exit(0));
   };
 

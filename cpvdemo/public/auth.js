@@ -2,6 +2,7 @@ const els = {
   authOpenBot: document.getElementById("authOpenBot"),
   authStatusText: document.getElementById("authStatusText")
 };
+const telegramLinks = window.TelegramLinks || null;
 
 let sessionToken = "";
 let pollTimer = null;
@@ -70,13 +71,23 @@ function startPolling() {
 }
 
 async function boot() {
+  if (els.authOpenBot) {
+    els.authOpenBot.addEventListener("click", (event) => {
+      event.preventDefault();
+      const deep = String(els.authOpenBot.dataset.deep || "");
+      telegramLinks?.openDeepLink(deep || els.authOpenBot.href);
+    });
+  }
+
   try {
     const res = await apiPost("/api/auth/session", {});
     sessionToken = String(res.token || "");
     if (els.authOpenBot) {
-      els.authOpenBot.href = String(res.tg || "#");
+      const links = telegramLinks?.buildFromTelegramUrl(res.tg) || { deep: String(res.tg || "#"), web: String(res.tg || "#") };
+      els.authOpenBot.href = links.deep || links.web || "#";
+      els.authOpenBot.dataset.deep = links.deep || "";
     }
-    setStatus("Ссылка готова. Перейдите в Telegram и нажмите Start.");
+    setStatus("Ссылка готова. Откройте Telegram, нажмите Start и вернитесь в эту вкладку.");
     startPolling();
   } catch (e) {
     setStatus(`Не удалось создать auth-сессию: ${e?.message || String(e)}`);
