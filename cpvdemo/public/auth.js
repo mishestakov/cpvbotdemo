@@ -48,6 +48,10 @@ function startPolling() {
         setStatus(STATUS_OPEN_BOT);
         return;
       }
+      if (row.status === "awaiting_channel") {
+        setStatus("Авторизация успешна. Вернитесь в бота и выберите канал через кнопку \"Выбрать канал\".");
+        return;
+      }
       if (row.status === "connected") {
         if (row.web) {
           location.replace(row.web);

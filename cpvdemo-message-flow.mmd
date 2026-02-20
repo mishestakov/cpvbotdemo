@@ -1,0 +1,84 @@
+flowchart TB
+  %% CPV demo: current bot message flow (from cpvdemo/server.js)
+
+  subgraph AUTH["1) Авторизация блогера"]
+    A1["WEB: POST /api/auth/session"] --> A2["Ссылка: https://t.me/<bot>?start=<token>"]
+    A2 --> A3["Блогер жмет /start <token>"]
+    A3 --> A4["BOT: Авторизация успешна. Выберите канал, где вы админ"]
+    A4 --> A5["Блогер отправляет chat_shared (выбор канала)"]
+    A5 --> A6{"Бот уже есть в канале\nи может постить?"}
+    A6 -- "Да" --> A7["BOT: Бот уже подключен, настройка завершена"]
+    A6 -- "Нет" --> A8["BOT: Добавьте бота в канал\n(админ + право публикации)"]
+  end
+
+  subgraph MODE["2) Смена режима"]
+    M1["Блогер: /mode"] --> M1a{"Каналов > 1?"}
+    M1a -- "Да" --> M1b["BOT: список каналов + статус каждого"]
+    M1a -- "Нет" --> M2["BOT: 4 кнопки режима"]
+    M1b --> M2
+    M2 --> M3["callback mode:*"]
+    M3 --> M4["BOT: Режим обновлен + перерисовка сообщения"]
+    M5["Блогер: /pause"] --> M5a{"Каналов > 1?"}
+    M5a -- "Да" --> M5b["BOT: список каналов + статус каждого"]
+    M5a -- "Нет" --> M6["BOT: кнопка ⏸ Пауза 24 часа\n(или сообщение, что режим не auto)"]
+    M5b --> M6
+    M6 --> M7["callback pause:24h"]
+    M7 --> M8["BOT: Автопубликация на паузе до ..."]
+    M9["По истечении 24ч"] --> M10["BOT (reply): Пауза завершена,\nпубликации снова активны + ⏸ Пауза 24 часа"]
+  end
+
+  subgraph OFFER_CREATE["3) Создание оффера рекламодателем"]
+    O1["WEB: POST /api/advertiser/offers"] --> O2{"modeAtCreation"}
+    O2 -- "auto" --> O3["status=scheduled\nBOT: тихий режим (без сообщения блогеру)"]
+    O2 -- "auto_with_precheck" --> O4["status=pending_precheck"]
+    O2 -- "manual_approval" --> O5["status=pending_approval"]
+    O2 -- "manual_posting" --> O6["status=pending_manual_posting"]
+    O4 --> O7["BOT: ad text + summary + inline keyboard\n(слоты только в окне dateFrom..dateTo)"]
+    O5 --> O7
+    O6 --> O7
+  end
+
+  subgraph PRECHECK_APPROVAL["4) pending_precheck / pending_approval"]
+    P1["Кнопки:\n✅ Подтвердить\n🕒 Выбрать другое время\n❌ Отклонить"] --> P2{"Действие"}
+    P2 -- "Подтвердить (of:ap)" --> P3["status=scheduled\nBOT: Оффер подтвержден"]
+    P2 -- "Выбрать другое время (of:tm)" --> P4["uiState=pick_time\nдаты + слоты + Назад"]
+    P4 --> P5["Слот выбран (of:ps)\nreschedule + обновление сообщения"]
+    P2 -- "Отклонить (of:dr)" --> P6["status=declined_by_blogger\nBOT: Оффер отклонен"]
+    P6 --> P7["BOT: Почему отклонили?\n(время / сообщение)"]
+    P7 --> P8["of:rr -> причина сохранена"]
+  end
+
+  subgraph MANUAL["5) pending_manual_posting / manual_waiting_publication"]
+    N1["Кнопки:\n🏷 Получить ERID\n🕒 Выбрать другое время\n❌ Отклонить"] --> N2{"Действие"}
+    N2 -- "Получить ERID (of:me)" --> N3["status=manual_waiting_publication"]
+    N3 --> N4["BOT: ERID + промаркированный текст"]
+    N2 -- "Выбрать другое время" --> N5["uiState=pick_time\nслоты + reschedule"]
+    N2 -- "Отклонить" --> N6["status=declined_by_blogger\n+ сбор причины"]
+    N3 --> N7["Кнопка: 🚫 Не публиковать (of:bc)"]
+    N7 --> N8["status=cancelled_by_blogger\nBOT: Публикация отменена"]
+  end
+
+  subgraph CHANNEL_EVENTS["6) События канала (ручной режим)"]
+    C1["channel_post / edited_channel_post"] --> C2{"Есть ERID оффера\nсо status=manual_waiting_publication?"}
+    C2 -- "Да" --> C3["status=manual_publication_found\nmanualPublicationFoundAt=now"]
+    C3 --> C4["BOT: Публикация найдена,\nдолжна провисеть минимум HOLD"]
+  end
+
+  subgraph DEADLINES["7) Фоновый таймер processOfferDeadlines"]
+    D1["pending_precheck + decisionDeadlineAt истек"] --> D2["auto approve -> status=scheduled\nBOT: автоматически подтвержден"]
+    D3["pending_approval + scheduledAt истек"] --> D4["status=archived_not_published\nBOT: не подтвержден вовремя"]
+    D5["pending_manual_posting + scheduledAt истек"] --> D6{"Окно dateTo еще активно\nи есть будущие слоты?"}
+    D6 -- "Да" --> D6a["BOT напоминание\n(макс 2 раза, интервал 24ч)"]
+    D6 -- "Нет, окно закончилось" --> D6b["status=archived_not_published\nBOT: срок размещения завершился"]
+    D6 -- "Нет, слотов больше нет" --> D6c["status=archived_not_published\nBOT: нет свободных слотов"]
+    D7["manual_waiting_publication + scheduledAt истек"] --> D8["status=archived_not_published\nBOT: не нашли публикацию с ERID"]
+    D9["scheduled + scheduledAt истек"] --> D10{"modeAtCreation"}
+    D10 -- "auto / auto_with_precheck / manual_approval" --> D11["status=auto_publish_error\nBOT: автопубликация не выполнена"]
+    D10 -- "manual_posting" --> D12["status=archived_not_published\nBOT: ручная публикация не подтверждена в срок"]
+    D13["manual_publication_found + HOLD истек"] --> D14["status=rewarded\nBOT: деньги начислены, можно удалить"]
+  end
+
+  subgraph CANCELS["8) Отмена через веб"]
+    X1["WEB: /api/offers/cancel (блогер)"] --> X2["status=cancelled_by_blogger\nBOT: публикация отменена"]
+    X3["WEB: /api/advertiser/offers/cancel"] --> X4["status=cancelled_by_advertiser\nBOT: рекламодатель отменил оффер"]
+  end

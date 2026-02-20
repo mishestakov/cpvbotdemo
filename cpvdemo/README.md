@@ -1,13 +1,19 @@
 # CPV Demo
 
-Минимальный перенос страницы настроек из `~/suggestpost/post-planner/public` для демо-флоу CPV.
+Демо флоу CPV с Telegram Bot API:
+- блогер авторизуется через `/start <token>`;
+- выбирает канал через `request_chat` (только канал, где он админ);
+- настраивает режим публикации и расписание;
+- рекламодатель вручную создает офферы;
+- админка показывает всех блогеров, каналы и офферы.
 
 ## Что внутри
-- `public/index.html` — страница настроек канала.
-- `public/auth.html` — простая точка входа авторизации.
-- `public/proto.css` — стили.
-- `public/app.js`, `public/auth.js` — клиентский UI-скрипт.
-- `server.js` — локальный demo-сервер для API страницы (без TDLib).
+- `public/auth.html` — вход блогера в Telegram-бот.
+- `public/index.html` — кабинет блогера.
+- `public/advertiser.html` — кабинет рекламодателя.
+- `public/admin.html` — админка.
+- `server.js` — API, webhook обработка, бизнес-логика.
+- `data/db.json` — JSON база (создается автоматически).
 
 ## Запуск
 ```bash
@@ -19,14 +25,19 @@ npm run start:cpvdemo
 
 Открыть:
 - `http://127.0.0.1:3030/cpvdemo/auth`
+- `http://127.0.0.1:3030/cpvdemo/advertiser`
+- `http://127.0.0.1:3030/cpvdemo/admin`
 
 ## Важно
 - Для auth через Telegram нужен `BOT_TOKEN` в `.env`.
 - Сервер работает в webhook-режиме (без long polling).
 - Нужен публичный HTTPS URL (например, ngrok) и `WEBHOOK_BASE_URL` в `.env`.
 - `WEBHOOK_SECRET_TOKEN` обязателен: сервер проверяет заголовок `x-telegram-bot-api-secret-token`.
+- `WEBHOOK_DROP_PENDING_UPDATES=true` (по умолчанию) очищает хвост старых Telegram updates при рестарте сервера.
+- `MANUAL_PUBLICATION_HOLD_MS=60000` — сколько пост с ERID должен провисеть в канале до начисления (для демо: 1 минута).
 - После смены ngrok URL перезапустите `npm run start:cpvdemo`, чтобы заново вызвать `setWebhook`.
-- Это UI-демо + минимальная bot-auth и mock API.
+- База хранится в `cpvdemo/data/db.json` и исключена из git.
+- Это UI-демо + минимальная bot-auth и API.
 - Логика TDLib и продовая backend-интеграция не переносились.
 
 ## Быстрый пример с ngrok

@@ -36,6 +36,8 @@ const els = {
   settingsSaveHint: document.getElementById("settingsSaveHint"),
   plannedPostsList: document.getElementById("plannedPostsList"),
   plannedPostsHint: document.getElementById("plannedPostsHint"),
+  queueFilterWork: document.getElementById("queueFilterWork"),
+  queueFilterArchive: document.getElementById("queueFilterArchive"),
 
   auctionStrategySlider: document.getElementById("auctionStrategySlider"),
   auctionStrategyLabels: Array.from(document.querySelectorAll("#auctionStrategyLabels span"))
@@ -45,6 +47,7 @@ let latestState = null;
 let scheduleState = createDefaultScheduleState();
 let draftState = createDefaultScheduleState();
 let modeUpdateInFlight = false;
+let queueFilter = "work";
 
 function setText(el, value) {
   if (!el) return;
@@ -67,6 +70,12 @@ function cloneState(state) {
 
 function hourText(hour) {
   return `${String(hour).padStart(2, "0")}:00`;
+}
+
+function compactText(value, maxLen = 160) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, maxLen - 1)}...`;
 }
 
 function scheduleStateFromSlots(slots) {
@@ -186,17 +195,37 @@ function setSelectedMode(mode) {
   if (els.modeManualPosting) els.modeManualPosting.checked = value === "manual_posting";
 }
 
-function canCancelPost(status) {
-  return status === "pending_precheck" || status === "pending_approval" || status === "pending_manual_posting" || status === "scheduled";
+function canCancelPost(status, scheduledAt) {
+  const ts = Number(scheduledAt || 0);
+  if (Number.isFinite(ts) && ts > 0 && ts < Date.now()) return false;
+  return (
+    status === "pending_precheck" ||
+    status === "pending_approval" ||
+    status === "pending_manual_posting" ||
+    status === "manual_waiting_publication" ||
+    status === "scheduled"
+  );
 }
 
-function renderPlannedPosts(posts) {
+function setQueueFilter(nextFilter) {
+  queueFilter = nextFilter === "archive" ? "archive" : "work";
+  if (els.queueFilterWork) els.queueFilterWork.classList.toggle("active", queueFilter === "work");
+  if (els.queueFilterArchive) els.queueFilterArchive.classList.toggle("active", queueFilter === "archive");
+}
+
+function renderQueuePosts(workPosts, archivePosts) {
   const root = els.plannedPostsList;
   if (!root) return;
   root.innerHTML = "";
 
+  const posts = queueFilter === "archive"
+    ? (Array.isArray(archivePosts) ? archivePosts : [])
+    : (Array.isArray(workPosts) ? workPosts : []);
+
   if (!Array.isArray(posts) || !posts.length) {
-    root.innerHTML = '<p class="muted">Пока нет запланированных публикаций.</p>';
+    root.innerHTML = queueFilter === "archive"
+      ? '<p class="muted">Архив пуст.</p>'
+      : '<p class="muted">Пока нет публикаций в работе.</p>';
     setText(els.plannedPostsHint, "—");
     return;
   }
@@ -207,15 +236,23 @@ function renderPlannedPosts(posts) {
 
     const main = document.createElement("div");
     main.className = "planned-main";
+    const textPreview = compactText(item.text || "");
     main.innerHTML =
       `<div><strong>#${item.id}</strong></div>` +
       `<div class="planned-meta">${item.scheduledAtText} • ${item.modeTitle || item.mode}</div>` +
       `<div class="planned-meta">${item.statusTitle || item.status}</div>` +
-      `<div class="planned-meta">CPV: ${item.cpv} ₽ • Доход: ${item.estimatedIncome} ₽</div>` +
-      `<div class="planned-meta">${item.text || ""}</div>`;
+      (queueFilter === "archive" && item.publicationStateTitle ? `<div class="planned-meta">Результат: ${item.publicationStateTitle}</div>` : "") +
+      `<div class="planned-meta">CPV: ${item.cpv} ₽ • Доход: ${item.estimatedIncome} ₽</div>`;
+    if (textPreview) {
+      const textRow = document.createElement("div");
+      textRow.className = "planned-meta";
+      textRow.textContent = textPreview;
+      textRow.title = String(item.text || "");
+      main.appendChild(textRow);
+    }
     row.appendChild(main);
 
-    if (canCancelPost(item.status)) {
+    if (queueFilter === "work" && canCancelPost(item.status, item.scheduledAt)) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "btn btn-outline";
@@ -280,7 +317,7 @@ function renderState(state) {
 
   scheduleState = scheduleStateFromSlots(ch.scheduleSlots || []);
   renderScheduleTags();
-  renderPlannedPosts(state?.plannedPosts || []);
+  renderQueuePosts(state?.plannedPosts || [], state?.archivePosts || []);
 
   const botUsername = state?.bot?.username || "";
   if (botUsername) {
@@ -478,6 +515,19 @@ function bindEvents() {
     });
   }
 
+  if (els.queueFilterWork) {
+    els.queueFilterWork.addEventListener("click", () => {
+      setQueueFilter("work");
+      renderQueuePosts(latestState?.plannedPosts || [], latestState?.archivePosts || []);
+    });
+  }
+  if (els.queueFilterArchive) {
+    els.queueFilterArchive.addEventListener("click", () => {
+      setQueueFilter("archive");
+      renderQueuePosts(latestState?.plannedPosts || [], latestState?.archivePosts || []);
+    });
+  }
+
   if (els.saveSettingsBtn) {
     els.saveSettingsBtn.addEventListener("click", () => {
       saveSettings().catch(() => {});
@@ -522,6 +572,7 @@ async function boot() {
   fillWeeklyPostLimitOptions();
   buildMatrix();
   renderScheduleTags();
+  setQueueFilter("work");
   updateStrategySlider();
   bindEvents();
 

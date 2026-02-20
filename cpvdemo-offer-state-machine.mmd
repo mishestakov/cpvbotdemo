@@ -1,0 +1,103 @@
+%%{init: {
+  'theme': 'base',
+  'themeVariables': {
+    'fontFamily': 'Arial',
+    'fontSize': '16px',
+    'lineColor': '#334155',
+    'primaryColor': '#F8FAFC',
+    'primaryBorderColor': '#94A3B8',
+    'clusterBkg': '#F8FAFC',
+    'clusterBorder': '#CBD5E1'
+  },
+  'flowchart': {
+    'defaultRenderer': 'dagre-wrapper',
+    'curve': 'basis',
+    'nodeSpacing': 34,
+    'rankSpacing': 56
+  }
+}}%%
+flowchart TB
+
+  OFFER_CREATED([Оффер создан]):::core
+
+  subgraph RULES["Общие правила"]
+    direction TB
+    R1["Для любого active-статуса:<br/>- Отмена блогером -> cancelled_by_blogger<br/>- Отмена рекламодателем -> cancelled_by_advertiser"]:::shared
+  end
+
+  subgraph LANES["Режимы публикации"]
+    direction LR
+
+    subgraph AUTO["1. Автоматически"]
+      direction TB
+      A_SCHEDULED[scheduled]:::auto
+      A_ERROR[auto_publish_error]:::error
+      A_SCHEDULED -.->|Время выхода| A_ERROR
+    end
+
+    subgraph PRECHECK["2. С предпросмотром"]
+      direction TB
+      P_PENDING[pending_precheck]:::precheck
+      P_PICK[pick_time]:::shared
+      P_SCHEDULED[scheduled]:::precheck
+      P_DECLINED[declined_by_blogger]:::terminal
+      P_ERROR[auto_publish_error]:::error
+      P_PENDING -->|Подтвердить| P_SCHEDULED
+      P_PENDING -.->|Дедлайн истек| P_SCHEDULED
+      P_PENDING -->|Отклонить| P_DECLINED
+      P_PENDING -.->|Выбрать другое время| P_PICK
+      P_PICK -->|Слот выбран| P_PENDING
+      P_SCHEDULED -.->|Время выхода| P_ERROR
+    end
+
+    subgraph APPROVAL["3. Только после подтверждения"]
+      direction TB
+      AP_PENDING[pending_approval]:::approval
+      AP_PICK[pick_time]:::shared
+      AP_SCHEDULED[scheduled]:::approval
+      AP_ARCHIVED[archived_not_published]:::terminal
+      AP_DECLINED[declined_by_blogger]:::terminal
+      AP_ERROR[auto_publish_error]:::error
+      AP_PENDING -->|Подтвердить| AP_SCHEDULED
+      AP_PENDING -.->|Время вышло| AP_ARCHIVED
+      AP_PENDING -->|Отклонить| AP_DECLINED
+      AP_PENDING -.->|Выбрать другое время| AP_PICK
+      AP_PICK -->|Слот выбран| AP_PENDING
+      AP_SCHEDULED -.->|Время выхода| AP_ERROR
+    end
+
+    subgraph MANUAL["4. Ручная публикация"]
+      direction TB
+      M_PENDING[pending_manual_posting]:::manual
+      M_PICK[pick_time]:::shared
+      M_WAITING[manual_waiting_publication]:::manual
+      M_FOUND[manual_publication_found]:::manual
+      M_REWARDED[rewarded]:::success
+      M_ARCHIVED[archived_not_published]:::terminal
+      M_DECLINED[declined_by_blogger]:::terminal
+      M_PENDING -->|Получить ERID| M_WAITING
+      M_PENDING -.->|Время вышло| M_ARCHIVED
+      M_PENDING -->|Отклонить| M_DECLINED
+      M_PENDING -.->|Выбрать другое время| M_PICK
+      M_PICK -->|Слот выбран| M_PENDING
+      M_WAITING -->|Найден пост с ERID| M_FOUND
+      M_WAITING -.->|Время вышло| M_ARCHIVED
+      M_FOUND -->|Удержание 1 минута| M_REWARDED
+    end
+
+  end
+
+  OFFER_CREATED -->|mode=auto| A_SCHEDULED
+  OFFER_CREATED -->|mode=auto_with_precheck| P_PENDING
+  OFFER_CREATED -->|mode=manual_approval| AP_PENDING
+  OFFER_CREATED -->|mode=manual_posting| M_PENDING
+
+  classDef core fill:#E2E8F0,stroke:#475569,stroke-width:1.8px,color:#0F172A;
+  classDef auto fill:#DCFCE7,stroke:#166534,stroke-width:1.8px,color:#14532D;
+  classDef precheck fill:#DBEAFE,stroke:#1D4ED8,stroke-width:1.8px,color:#1E3A8A;
+  classDef approval fill:#FEF3C7,stroke:#B45309,stroke-width:1.8px,color:#78350F;
+  classDef manual fill:#FCE7F3,stroke:#BE185D,stroke-width:1.8px,color:#831843;
+  classDef shared fill:#E0F2FE,stroke:#0369A1,stroke-width:1.8px,color:#0C4A6E;
+  classDef terminal fill:#F1F5F9,stroke:#475569,stroke-width:1.8px,color:#0F172A;
+  classDef error fill:#FEE2E2,stroke:#B91C1C,stroke-width:1.8px,color:#7F1D1D;
+  classDef success fill:#DCFCE7,stroke:#166534,stroke-width:1.8px,color:#14532D;

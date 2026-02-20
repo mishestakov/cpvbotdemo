@@ -18,7 +18,8 @@
           <a href="#" class="menu-item"><span class="menu-icon"></span><span>Уведомления</span></a>
           <a href="#" class="menu-item"><span class="menu-icon"></span><span>Реклама на сайтах</span></a>
           <a href="#" class="menu-item"><span class="menu-icon"></span><span>Реклама в приложениях</span></a>
-          <a href="#" class="menu-item active"><span class="menu-icon"></span><span>Реклама в Telegram</span></a>
+          <a href="#" class="menu-item"><span class="menu-icon"></span><span>Реклама в Telegram</span></a>
+          <a href="/cpvdemo/advertiser" class="menu-item active"><span class="menu-icon"></span><span>Кабинет рекламодателя</span></a>
           <a href="#" class="menu-item"><span class="menu-icon"></span><span>Статистика</span></a>
           <a href="#" class="menu-item"><span class="menu-icon"></span><span>Документы</span></a>
         </nav>
@@ -28,28 +29,37 @@
       <main class="main">
         <header class="topbar">
           <h1>Кабинет рекламодателя</h1>
-          <a href="/cpvdemo/auth">Страница блогера</a>
+          <div class="topbar-links">
+            <a href="/cpvdemo/auth">Страница блогера</a>
+            <a href="/cpvdemo/admin">Админка</a>
+          </div>
         </header>
 
         <section class="content">
           <article class="card">
             <h2>Создать оффер</h2>
-            <p class="muted">Заполните текст рекламы, диапазон дат и CPV. Затем выберите блогеров, которые уже авторизовались через бота.</p>
+            <p class="muted">Заполните текст рекламы, диапазон дат и CPV. Затем выберите каналы, которые блогеры уже подключили через бота.</p>
             <div class="form-grid">
               <label>Текст рекламы</label>
               <textarea class="control textarea" id="advText" placeholder="Текст рекламного поста (без ERID)"></textarea>
 
               <label>Дата начала</label>
-              <input class="control" id="advDateFrom" type="datetime-local" />
+              <input class="control" id="advDateFrom" type="date" />
 
               <label>Дата окончания</label>
-              <input class="control" id="advDateTo" type="datetime-local" />
+              <input class="control" id="advDateTo" type="date" />
 
               <label>CPV, ₽</label>
               <input class="control" id="advCpv" type="number" min="100" step="10" value="900" />
 
-              <label>Блогеры</label>
-              <div class="adv-blogger-list" id="advBloggerList"></div>
+              <label>Каналы</label>
+              <div>
+                <div class="adv-filter" id="advChannelFilter">
+                  <label class="check"><input type="radio" name="channelFilterMode" value="all" checked /> Все каналы</label>
+                  <label class="check"><input type="radio" name="channelFilterMode" value="available" /> Доступные каналы</label>
+                </div>
+                <div class="adv-blogger-list" id="advChannelList"></div>
+              </div>
             </div>
             <div class="inline-actions">
               <button class="btn btn-accent" id="advCreateBtn" type="button">Создать оффер</button>

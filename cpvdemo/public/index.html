@@ -19,6 +19,7 @@
           <a href="#" class="menu-item"><span class="menu-icon"></span><span>Реклама на сайтах</span></a>
           <a href="#" class="menu-item"><span class="menu-icon"></span><span>Реклама в приложениях</span></a>
           <a href="#" class="menu-item active"><span class="menu-icon"></span><span>Реклама в Telegram</span></a>
+          <a href="/cpvdemo/advertiser" class="menu-item"><span class="menu-icon"></span><span>Кабинет рекламодателя</span></a>
           <a href="#" class="menu-item"><span class="menu-icon"></span><span>Статистика</span></a>
           <a href="#" class="menu-item"><span class="menu-icon"></span><span>Документы</span></a>
           <a href="#" class="menu-item"><span class="menu-icon"></span><span>Дополнительно</span></a>
@@ -32,7 +33,10 @@
       <main class="main">
         <header class="topbar">
           <h1 id="pageTitle">Редактирование канала</h1>
-          <a href="/cpvdemo/advertiser">Кабинет рекламодателя</a>
+          <div class="topbar-links">
+            <a href="/cpvdemo/advertiser">Кабинет рекламодателя</a>
+            <a href="/cpvdemo/admin">Админка</a>
+          </div>
         </header>
 
         <section class="content">
@@ -101,13 +105,6 @@
                 <button class="btn btn-outline" type="button" id="openScheduleModal">Изменить</button>
               </div>
 
-              <label>Режим публикации рекламы</label>
-              <div class="pp-modeGroup">
-                <label class="check pp-modeOption"><input type="radio" name="postingMode" value="auto" id="modeAuto" /> Автоматически</label>
-                <label class="check pp-modeOption"><input type="radio" name="postingMode" value="auto_with_precheck" id="modeAutoWithPrecheck" /> С предпросмотром (если не отклоню — выйдет)</label>
-                <label class="check pp-modeOption"><input type="radio" name="postingMode" value="manual_approval" id="modeManualApproval" /> Только после моего подтверждения</label>
-                <label class="check pp-modeOption"><input type="radio" name="postingMode" value="manual_posting" id="modeManualPosting" /> Ручная публикация</label>
-              </div>
             </div>
           </article>
 
@@ -156,11 +153,30 @@
             </div>
 
             <div class="form-grid">
-              <label>Стоимость CPM ⓘ</label>
+              <label>Стоимость CPV ⓘ</label>
               <input class="control with-x" value="1 000 ₽" />
             </div>
             <div class="sub-block">
-              <div class="sub-title">Запланированные публикации</div>
+              <div class="form-grid">
+                <label>Режим публикации рекламы</label>
+                <div class="pp-modeGroup">
+                  <label class="check pp-modeOption"><input type="radio" name="postingMode" value="auto" id="modeAuto" /> Автоматически</label>
+                  <label class="check pp-modeOption">
+                    <input type="radio" name="postingMode" value="auto_with_precheck" id="modeAutoWithPrecheck" />
+                    С предпросмотром (если не отклоню — выйдет)
+                    <span class="chip pp-modeBadge">Рекомендуем</span>
+                  </label>
+                  <label class="check pp-modeOption"><input type="radio" name="postingMode" value="manual_approval" id="modeManualApproval" /> Только после моего подтверждения</label>
+                  <label class="check pp-modeOption"><input type="radio" name="postingMode" value="manual_posting" id="modeManualPosting" /> Ручная публикация</label>
+                </div>
+              </div>
+            </div>
+            <div class="sub-block">
+              <div class="sub-title">Очередь публикаций</div>
+              <div class="tabs">
+                <button class="tab active" id="queueFilterWork" type="button">В работе</button>
+                <button class="tab" id="queueFilterArchive" type="button">Архив</button>
+              </div>
               <div class="planned-list" id="plannedPostsList"></div>
               <p class="muted pp-inline-hint" id="plannedPostsHint">—</p>
             </div>
