@@ -543,3 +543,92 @@
   - `cpvdemo/server.js`: в bot-текстах оффера (`pending_*`, `manual_*`, `pick_time`) `CPV` -> `CPM`.
   - `cpvdemo/public/index.html`: подписи стратегии возвращены (`CPM стратегия`, `Порог CPM`, `Минимальный CPM`).
 - Проверка: `node --check cpvdemo/server.js` — OK.
+
+### 2026-02-20T00:00:00+00:00
+- Запрос пользователя: выяснить, почему в режиме блогера `auto` оффер от рекламодателя не публикуется в канале.
+- Что сделано: проверены `cpvdemo/server.js`, `cpvdemo-message-flow.mmd`, `cpvdemo/README.md`; подтверждено, что реального шага отправки поста в канал для `scheduled` нет.
+- Решение/правило: в текущем прототипе это не «пропавший код», а незавершенная ветка — по дедлайну `scheduled` переводится в `auto_publish_error`.
+
+### 2026-02-20T00:10:00+00:00
+- Запрос пользователя: реализовать автопостинг и добавление ERID перед публикацией (рекламодатель загружает текст без ERID).
+- Что сделано: в `cpvdemo/server.js` добавлены `buildAutoPublishText` и `publishOfferToChannel`; для `scheduled` + режимов `auto/auto_with_precheck/manual_approval` теперь выполняется `sendMessage` в канал с `textMarked` (ERID добавляется автоматически), при успехе оффер -> `rewarded`, при неуспехе остаётся `auto_publish_error`.
+- Решение/правило: минимальная реализация без расширения модели статусов и без рефакторинга соседних веток.
+
+### 2026-02-20T12:09:52+03:00
+- Запрос пользователя: начать автоматизацию e2e через TDLib (пользователь кликает кнопки бота), плюс подготовить спецификацию покрытия веток.
+- Что реализовано:
+  - Вынесены в env интервалы, которые раньше были захардкожены под 24 часа:
+    - `MANUAL_PENDING_REMINDER_MAX`,
+    - `MANUAL_PENDING_REMINDER_INTERVAL_MS`,
+    - `AUTO_PAUSE_DURATION_MS`.
+  - Обновлен `.env.example` (добавлены новые env + базовые TDLib env для e2e).
+  - Добавлен первый runnable TDLib e2e раннер:
+    - `tests/tdlib/e2e-runner.js`,
+    - сценарии: `precheck_confirm`, `precheck_decline`, `manual_erid_reward`, `advertiser_cancel`, `auto_pause_skip`.
+  - Добавлена спецификация покрытия и ограничений:
+    - `tests/tdlib/TDLIB_E2E_SPEC.md`.
+  - Добавлена инструкция по запуску:
+    - `tests/tdlib/README.md`.
+  - Добавлен npm-скрипт запуска:
+    - `npm run test:tdlib`.
+  - В `cpvdemo/README.md` добавлен раздел про TDLib E2E и новые env.
+- Технический момент:
+  - Для полного автопрогона шага выбора канала (`request_chat`) в раннере используется инжект `chat_shared` update в локальный webhook (с `WEBHOOK_SECRET_TOKEN`), т.к. этот шаг плохо автоматизируется чистым TDLib-кликом.
+- Проверка:
+  - `node --check cpvdemo/server.js` — OK,
+  - `node --check tests/tdlib/e2e-runner.js` — OK.
+
+### 2026-02-20T12:18:41+03:00
+- Запрос пользователя: убрать ожидание часовых слотов в e2e и сделать быстрый тестовый контур.
+- Что добавлено в backend:
+  - `ALLOW_TEST_API` (env, по умолчанию `false`);
+  - `POST /api/test/offers` — test-only создание оффера с произвольным `scheduledAt`;
+  - `POST /api/test/tick` — принудительный запуск deadline/pause processing;
+  - test API доступен только при `ALLOW_TEST_API=true` и только с localhost.
+- Что добавлено для ускорения времени:
+  - параметры вынесены в env: `MANUAL_PENDING_REMINDER_MAX`, `MANUAL_PENDING_REMINDER_INTERVAL_MS`, `AUTO_PAUSE_DURATION_MS`.
+- Что обновлено в TDLib e2e runner:
+  - `tests/tdlib/e2e-runner.js` теперь (по умолчанию) использует test API (`CPVDEMO_USE_TEST_API=true`) и создает офферы через `/api/test/offers`;
+  - при ожидании статуса runner дергает `/api/test/tick`, чтобы продвинуть state-machine без долгих пауз.
+- Документация:
+  - обновлены `tests/tdlib/README.md`, `tests/tdlib/TDLIB_E2E_SPEC.md`, `cpvdemo/README.md`, `.env.example`.
+- Проверка:
+  - `node --check cpvdemo/server.js` — OK;
+  - `node --check tests/tdlib/e2e-runner.js` — OK.
+
+### 2026-02-20T00:25:00+00:00
+- Запрос пользователя: менять формат маркировки ERID (в конце текста `Реклама. erid: ...`) и добавить кнопку `Добавил в очередь постинга` с подтверждением от блогера.
+- Что сделано: в `cpvdemo/server.js` добавлен форматтер `buildMarkedAdText`; `textMarked` теперь формируется как `текст + Реклама. erid: ...`; добавлена callback-кнопка `of:mq`; введен статус `manual_queued_publication` и обработка его как активного/manual-waiting для дедлайна и детекта публикации.
+- Решение/правило: реализовано минимально в одном файле без новых зависимостей и без рефакторинга соседних веток.
+
+### 2026-02-20T12:56:41+03:00
+- Запрос пользователя: добавить второй режим UX-прогона, где человек руками кликает в Telegram, а runner ведет сценарий и валидирует статусы.
+- Что сделано:
+  - `tests/tdlib/e2e-runner.js` переработан в 2 режима:
+    - `--mode=auto` (старое поведение: TDLib кликает сам),
+    - `--mode=guided` (человек кликает, runner ждет `Y/s/q` на каждом шаге и проверяет статус).
+  - В `guided` режиме:
+    - показывается ссылка `/start` с токеном,
+    - runner ждет завершения auth/channel selection,
+    - по каждому сценарию печатает действие пользователя и ждет подтверждение,
+    - поддерживает `s` для test tick (`/api/test/tick`) чтобы ускорять тайм-аутные ветки.
+  - Обновлены docs:
+    - `tests/tdlib/README.md` (описаны оба режима),
+    - `tests/tdlib/TDLIB_E2E_SPEC.md` (добавлена модель режимов).
+- Проверка:
+  - `node --check tests/tdlib/e2e-runner.js` — OK.
+
+### 2026-02-20T12:59:48+03:00
+- Запрос пользователя: продолжить доработку с учетом ручных изменений в коде.
+- Что сделано: перепроверена совместимость нового TDLib e2e runner с актуальным `cpvdemo/server.js` (включая `manual_queued_publication` и test API), выполнены синтакс-проверки.
+- Мелкий дофикс: в `tests/tdlib/e2e-runner.js` исправлена опечатка в диагностическом лейбле (`sheduled` -> `scheduled`).
+- Проверка: `node --check cpvdemo/server.js`, `node --check tests/tdlib/e2e-runner.js` — OK.
+
+### 2026-02-20T13:17:26+03:00
+- Запрос пользователя: начать поэтапно с добавления теста ветки, где в ручном режиме блогер ничего не нажимает до времени слота.
+- Что сделано:
+  - В `tests/tdlib/e2e-runner.js` добавлен сценарий `manual_no_action_until_slot`.
+  - Сценарий переключает режим в `manual_posting`, создает оффер с коротким окном размещения и валидирует финальный статус `archived_not_published` без действий пользователя.
+  - Сценарий добавлен в `SCENARIOS` и в `DEFAULT_SCENARIOS`.
+  - Обновлены `tests/tdlib/README.md` и `tests/tdlib/TDLIB_E2E_SPEC.md`.
+- Проверка: `node --check tests/tdlib/e2e-runner.js` — OK.
