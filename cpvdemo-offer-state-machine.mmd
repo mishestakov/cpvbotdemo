@@ -31,8 +31,10 @@ flowchart TB
     subgraph AUTO["1. Автоматически"]
       direction TB
       A_SCHEDULED[scheduled]:::auto
+      A_REWARDED[rewarded]:::success
       A_ERROR[auto_publish_error]:::error
-      A_SCHEDULED -.->|Время выхода| A_ERROR
+      A_SCHEDULED -.->|Время выхода успех| A_REWARDED
+      A_SCHEDULED -.->|Время выхода ошибка| A_ERROR
     end
 
     subgraph PRECHECK["2. С предпросмотром"]
@@ -41,13 +43,15 @@ flowchart TB
       P_PICK[pick_time]:::shared
       P_SCHEDULED[scheduled]:::precheck
       P_DECLINED[declined_by_blogger]:::terminal
+      P_REWARDED[rewarded]:::success
       P_ERROR[auto_publish_error]:::error
       P_PENDING -->|Подтвердить| P_SCHEDULED
       P_PENDING -.->|Дедлайн истек| P_SCHEDULED
       P_PENDING -->|Отклонить| P_DECLINED
       P_PENDING -.->|Выбрать другое время| P_PICK
       P_PICK -->|Слот выбран| P_PENDING
-      P_SCHEDULED -.->|Время выхода| P_ERROR
+      P_SCHEDULED -.->|Время выхода успех| P_REWARDED
+      P_SCHEDULED -.->|Время выхода ошибка| P_ERROR
     end
 
     subgraph APPROVAL["3. Только после подтверждения"]
@@ -57,13 +61,15 @@ flowchart TB
       AP_SCHEDULED[scheduled]:::approval
       AP_ARCHIVED[archived_not_published]:::terminal
       AP_DECLINED[declined_by_blogger]:::terminal
+      AP_REWARDED[rewarded]:::success
       AP_ERROR[auto_publish_error]:::error
       AP_PENDING -->|Подтвердить| AP_SCHEDULED
       AP_PENDING -.->|Время вышло| AP_ARCHIVED
       AP_PENDING -->|Отклонить| AP_DECLINED
       AP_PENDING -.->|Выбрать другое время| AP_PICK
       AP_PICK -->|Слот выбран| AP_PENDING
-      AP_SCHEDULED -.->|Время выхода| AP_ERROR
+      AP_SCHEDULED -.->|Время выхода успех| AP_REWARDED
+      AP_SCHEDULED -.->|Время выхода ошибка| AP_ERROR
     end
 
     subgraph MANUAL["4. Ручная публикация"]
@@ -71,6 +77,7 @@ flowchart TB
       M_PENDING[pending_manual_posting]:::manual
       M_PICK[pick_time]:::shared
       M_WAITING[manual_waiting_publication]:::manual
+      M_QUEUED[manual_queued_publication]:::manual
       M_FOUND[manual_publication_found]:::manual
       M_REWARDED[rewarded]:::success
       M_ARCHIVED[archived_not_published]:::terminal
@@ -80,8 +87,11 @@ flowchart TB
       M_PENDING -->|Отклонить| M_DECLINED
       M_PENDING -.->|Выбрать другое время| M_PICK
       M_PICK -->|Слот выбран| M_PENDING
+      M_WAITING -->|Добавил в очередь постинга| M_QUEUED
       M_WAITING -->|Найден пост с ERID| M_FOUND
       M_WAITING -.->|Время вышло| M_ARCHIVED
+      M_QUEUED -->|Найден пост с ERID| M_FOUND
+      M_QUEUED -.->|Время вышло| M_ARCHIVED
       M_FOUND -->|Удержание 1 минута| M_REWARDED
     end
 
