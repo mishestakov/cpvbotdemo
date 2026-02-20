@@ -21,6 +21,7 @@ const WEBHOOK_BASE_URL = String(process.env.WEBHOOK_BASE_URL || "").trim().repla
 const WEBHOOK_SECRET_TOKEN = String(process.env.WEBHOOK_SECRET_TOKEN || "").trim();
 const WEBHOOK_PATH = "/api/telegram/webhook";
 const WEBHOOK_DROP_PENDING_UPDATES = String(process.env.WEBHOOK_DROP_PENDING_UPDATES || "true").trim().toLowerCase() !== "false";
+const ALLOW_TEST_API = String(process.env.ALLOW_TEST_API || "false").trim().toLowerCase() === "true";
 
 const BOT_API_TIMEOUT_MS = parseMsEnv("BOT_API_TIMEOUT_MS", 20_000, 3_000);
 const BOT_CONNECT_RETRY_INTERVAL_MS = parseMsEnv("BOT_CONNECT_RETRY_INTERVAL_MS", 5_000, 1_000);
@@ -28,9 +29,13 @@ const AUTH_SESSION_TTL_MS = parseMsEnv("AUTH_SESSION_TTL_MS", 30 * 60 * 1000, 60
 const PRECHECK_DECISION_MS = parseMsEnv("PRECHECK_DECISION_MS", 60_000, 10_000);
 const OFFER_DEADLINE_CHECK_INTERVAL_MS = parseMsEnv("OFFER_DEADLINE_CHECK_INTERVAL_MS", 5_000, 1_000);
 const MANUAL_PUBLICATION_HOLD_MS = parseMsEnv("MANUAL_PUBLICATION_HOLD_MS", 60_000, 1_000);
-const MANUAL_PENDING_REMINDER_MAX = 2;
-const MANUAL_PENDING_REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const AUTO_PAUSE_DURATION_MS = 24 * 60 * 60 * 1000;
+const MANUAL_PENDING_REMINDER_MAX = parseIntEnv("MANUAL_PENDING_REMINDER_MAX", 2, 0);
+const MANUAL_PENDING_REMINDER_INTERVAL_MS = parseMsEnv(
+  "MANUAL_PENDING_REMINDER_INTERVAL_MS",
+  24 * 60 * 60 * 1000,
+  1_000
+);
+const AUTO_PAUSE_DURATION_MS = parseMsEnv("AUTO_PAUSE_DURATION_MS", 24 * 60 * 60 * 1000, 1_000);
 const RU_HUMAN_DATE_TIME_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
   day: "numeric",
   month: "long",
@@ -58,6 +63,7 @@ const ACTIVE_OFFER_STATUSES = new Set([
   "pending_approval",
   "pending_manual_posting",
   "manual_waiting_publication",
+  "manual_queued_publication",
   "manual_publication_found",
   "scheduled"
 ]);
@@ -67,6 +73,7 @@ const STATUS_TITLES = {
   pending_approval: "Ждёт подтверждения",
   pending_manual_posting: "Ждёт принятия для ручной публикации",
   manual_waiting_publication: "Ожидает публикацию с ERID",
+  manual_queued_publication: "Отложка подтверждена, ждём публикацию",
   manual_publication_found: "Публикация найдена, идёт проверка",
   rewarded: "Вознаграждение начислено",
   archived_not_published: "Перенесено в архив (не размещено)",
@@ -104,6 +111,14 @@ function parseMsEnv(name, fallbackMs, minMs) {
   const value = Number(raw);
   if (!Number.isFinite(value)) return fallbackMs;
   return Math.max(minMs, Math.floor(value));
+}
+
+function parseIntEnv(name, fallback, min) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.floor(value));
 }
 
 function normalizeMode(mode) {
@@ -173,6 +188,7 @@ function canCancelOffer(status) {
     status === "pending_approval" ||
     status === "pending_manual_posting" ||
     status === "manual_waiting_publication" ||
+    status === "manual_queued_publication" ||
     status === "scheduled"
   );
 }
@@ -326,6 +342,11 @@ function contentType(filePath) {
   return "application/octet-stream";
 }
 
+function isLocalRequest(req) {
+  const addr = String(req?.socket?.remoteAddress || "");
+  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+}
+
 async function readJsonBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -387,6 +408,13 @@ function formatDateTime(ts) {
 
 function formatDateTimeHumanRu(ts) {
   return RU_HUMAN_DATE_TIME_FORMATTER.format(new Date(ts)).replace(" в ", ", ");
+}
+
+function buildMarkedAdText(textRaw, eridTag) {
+  const body = String(textRaw || "").trim();
+  const marker = `Реклама. erid: ${String(eridTag || "").trim()}`;
+  if (!body) return marker;
+  return `${body}\n\n${marker}`;
 }
 
 function manualHoldDurationText() {
@@ -1223,6 +1251,9 @@ function buildOfferKeyboard(offer, pageFromCallback) {
     rows.push([{ text: "🕒 Выбрать другое время", callback_data: `of:tm:${offer.id}` }]);
     rows.push([{ text: "❌ Отклонить", callback_data: `of:dr:${offer.id}` }]);
   } else if (offer.status === "manual_waiting_publication") {
+    rows.push([{ text: "✅ Добавил в очередь постинга", callback_data: `of:mq:${offer.id}` }]);
+    rows.push([{ text: "🚫 Не публиковать", callback_data: `of:bc:${offer.id}` }]);
+  } else if (offer.status === "manual_queued_publication") {
     rows.push([{ text: "🚫 Не публиковать", callback_data: `of:bc:${offer.id}` }]);
   } else if (offer.status === "scheduled") {
     rows.push([{ text: "🚫 Отказаться", callback_data: `of:bc:${offer.id}` }]);
@@ -1285,6 +1316,17 @@ function offerSummaryText(offer) {
       `Время: ${whenText}`,
       `CPM: ${offer.cpv} рублей, прогноз дохода ${offer.estimatedIncome} рублей`,
       `ERID: ${offer.eridTag || `demo-${offer.id}`}`
+    ].join("\n");
+  }
+
+  if (offer.status === "manual_queued_publication") {
+    return [
+      `Пост добавлен в очередь публикации в канале ${channelLabel}`,
+      "",
+      `Время: ${whenText}`,
+      `CPM: ${offer.cpv} рублей, прогноз дохода ${offer.estimatedIncome} рублей`,
+      `ERID: ${offer.eridTag || `demo-${offer.id}`}`,
+      "Спасибо, ждём выхода публикации."
     ].join("\n");
   }
 
@@ -1412,7 +1454,7 @@ function createOffer({ blogger, channel, scheduledAt, dateFrom, dateTo, textRaw,
     cpv: valueCpv,
     estimatedIncome,
     textRaw: adText,
-    textMarked: `[ERID: demo-${id}] ${adText}`,
+    textMarked: buildMarkedAdText(adText, `demo-${id}`),
     eridTag: `demo-${id}`,
     decisionDeadlineAt: status === "pending_precheck" ? Math.min(scheduledAt, Date.now() + PRECHECK_DECISION_MS) : null,
     selectedDatePage: 0,
@@ -1554,6 +1596,19 @@ async function rescheduleOffer(offer, slotTs) {
   return true;
 }
 
+function buildAutoPublishText(offer) {
+  const marked = String(offer?.textMarked || "").trim();
+  if (marked) return marked;
+  return buildMarkedAdText(offer?.textRaw, offer?.eridTag || `demo-${offer?.id || "unknown"}`);
+}
+
+async function publishOfferToChannel(offer) {
+  const channel = getChannelById(offer?.channelId);
+  if (!channel?.chatId) return null;
+  if (!channel.botConnected) return null;
+  return sendBotMessage(channel.chatId, buildAutoPublishText(offer));
+}
+
 async function processOfferDeadlines() {
   if (offerTickInFlight) return;
   offerTickInFlight = true;
@@ -1630,7 +1685,10 @@ async function processOfferDeadlines() {
         continue;
       }
 
-      if (offer.status === "manual_waiting_publication" && now >= Number(offer.scheduledAt)) {
+      if (
+        (offer.status === "manual_waiting_publication" || offer.status === "manual_queued_publication") &&
+        now >= Number(offer.scheduledAt)
+      ) {
         offer.status = "archived_not_published";
         offer.uiState = "main";
         db.offers[String(offer.id)] = offer;
@@ -1646,15 +1704,26 @@ async function processOfferDeadlines() {
           offer.modeAtCreation === "auto_with_precheck" ||
           offer.modeAtCreation === "manual_approval"
         ) {
-          offer.status = "auto_publish_error";
-          offer.uiState = "main";
-          db.offers[String(offer.id)] = offer;
-          saveDb(db);
-          upsertOfferMessage(offer).catch(() => {});
-          sendBotMessage(
-            offer.chatId,
-            `Оффер #${offer.id}: автопубликация не выполнена из-за ошибки. Публикация перенесена в архив.`
-          ).catch(() => {});
+          const channelMessage = await publishOfferToChannel(offer);
+          if (channelMessage?.message_id) {
+            offer.status = "rewarded";
+            offer.uiState = "main";
+            offer.channelPostId = Number(channelMessage.message_id);
+            db.offers[String(offer.id)] = offer;
+            saveDb(db);
+            upsertOfferMessage(offer).catch(() => {});
+            sendBotMessage(offer.chatId, `Оффер #${offer.id} опубликован автоматически в канале.`).catch(() => {});
+          } else {
+            offer.status = "auto_publish_error";
+            offer.uiState = "main";
+            db.offers[String(offer.id)] = offer;
+            saveDb(db);
+            upsertOfferMessage(offer).catch(() => {});
+            sendBotMessage(
+              offer.chatId,
+              `Оффер #${offer.id}: автопубликация не выполнена из-за ошибки. Публикация перенесена в архив.`
+            ).catch(() => {});
+          }
         } else if (offer.modeAtCreation === "manual_posting") {
           offer.status = "archived_not_published";
           offer.uiState = "main";
@@ -2290,6 +2359,21 @@ async function handleOfferCallback(query, parsed) {
     return;
   }
 
+  if (parsed.action === "mq") {
+    if (offer.status !== "manual_waiting_publication") {
+      await answerCallbackQuery(query.id, offerProcessedCallbackText(offer));
+      return;
+    }
+    offer.status = "manual_queued_publication";
+    offer.uiState = "main";
+    db.offers[String(offer.id)] = offer;
+    saveDb(db);
+    await upsertOfferMessage(offer);
+    await sendBotMessage(offer.chatId, "Спасибо, ждём выхода публикации.");
+    await answerCallbackQuery(query.id, "Отметили");
+    return;
+  }
+
   if (parsed.action === "mp") {
     if (offer.status !== "pending_manual_posting") {
       await answerCallbackQuery(query.id, offerProcessedCallbackText(offer));
@@ -2331,7 +2415,10 @@ async function handleChannelPostUpdate(post) {
   const bodyLower = body.toLowerCase();
 
   const targets = listOffers()
-    .filter((offer) => String(offer.channelId) === String(channel.id) && offer.status === "manual_waiting_publication")
+    .filter((offer) =>
+      String(offer.channelId) === String(channel.id) &&
+      (offer.status === "manual_waiting_publication" || offer.status === "manual_queued_publication")
+    )
     .sort((a, b) => a.id - b.id);
 
   for (const offer of targets) {
@@ -2527,6 +2614,82 @@ const server = http.createServer(async (req, res) => {
       expiresAt: row.expiresAt,
       web: row.status === "connected" ? `/cpvdemo?token=${encodeURIComponent(token)}` : null
     });
+    return;
+  }
+
+  if (url.pathname === "/api/test/tick" && req.method === "POST") {
+    if (!ALLOW_TEST_API || !isLocalRequest(req)) {
+      sendText(res, 404, "Not found");
+      return;
+    }
+
+    await processOfferDeadlines();
+    await processAutoPauseExpirations();
+    sendJson(res, 200, {
+      ok: true,
+      now: Date.now(),
+      totals: {
+        offers: listOffers().length,
+        activeOffers: listOffers().filter((offer) => isOfferActive(offer)).length
+      }
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/test/offers" && req.method === "POST") {
+    if (!ALLOW_TEST_API || !isLocalRequest(req)) {
+      sendText(res, 404, "Not found");
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const channelId = String(body.channelId || "").trim();
+    if (!channelId) {
+      sendJson(res, 400, { error: "channelId is required" });
+      return;
+    }
+
+    const channel = getChannelById(channelId);
+    if (!channel) {
+      sendJson(res, 404, { error: "Channel not found" });
+      return;
+    }
+
+    const blogger = getBloggerById(channel.bloggerId);
+    if (!blogger) {
+      sendJson(res, 404, { error: "Blogger not found" });
+      return;
+    }
+    if (!blogger.chatId) {
+      sendJson(res, 400, { error: "Blogger has no private chat" });
+      return;
+    }
+
+    const now = Date.now();
+    const scheduledAtRaw = Number(body.scheduledAt);
+    const scheduledAt = Number.isFinite(scheduledAtRaw) ? Math.floor(scheduledAtRaw) : now + 90_000;
+    const dateFromRaw = Number(body.dateFrom);
+    const dateToRaw = Number(body.dateTo);
+    const dateFrom = Number.isFinite(dateFromRaw) ? Math.floor(dateFromRaw) : Math.max(now - 60_000, scheduledAt - 60 * 60 * 1000);
+    const dateTo = Number.isFinite(dateToRaw) ? Math.floor(dateToRaw) : scheduledAt + 6 * 60 * 60 * 1000;
+    if (dateTo < dateFrom) {
+      sendJson(res, 400, { error: "dateTo must be >= dateFrom" });
+      return;
+    }
+
+    const cpv = Number(body.cpv);
+    const text = String(body.text || "").trim();
+    const offer = createOffer({
+      blogger,
+      channel,
+      scheduledAt,
+      dateFrom,
+      dateTo,
+      textRaw: text,
+      cpv
+    });
+    await notifyOfferCreated(offer);
+    sendJson(res, 200, { ok: true, offer: toOfferDto(offer) });
     return;
   }
 

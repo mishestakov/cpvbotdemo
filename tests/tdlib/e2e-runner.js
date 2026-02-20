@@ -8,9 +8,12 @@ const dotenv = require("dotenv");
 
 dotenv.config({ path: path.join(process.cwd(), ".env") });
 
+const HOST = process.env.HOST || "127.0.0.1";
+const PORT = process.env.PORT || 3030;
 const BASE_URL = String(
   process.env.CPVDEMO_BASE_URL || `http://${process.env.HOST || "127.0.0.1"}:${process.env.PORT || 3030}`
 ).replace(/\/+$/, "");
+const TEST_API_BASE_URL = String(process.env.CPVDEMO_TEST_API_BASE_URL || `http://${HOST}:${PORT}`).replace(/\/+$/, "");
 const WEBHOOK_SECRET_TOKEN = String(process.env.WEBHOOK_SECRET_TOKEN || "").trim();
 
 const TDLIB_PATH = process.env.TDLIB_PATH || "/home/mike/td/build/libtdjson.so";
@@ -129,8 +132,9 @@ async function apiGet(pathname) {
   return body;
 }
 
-async function apiPost(pathname, payload) {
-  const res = await fetch(`${BASE_URL}${pathname}`, {
+async function apiPost(pathname, payload, opts = {}) {
+  const targetBaseUrl = String(opts.baseUrl || BASE_URL).replace(/\/+$/, "");
+  const res = await fetch(`${targetBaseUrl}${pathname}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload || {})
@@ -140,10 +144,14 @@ async function apiPost(pathname, payload) {
   return body;
 }
 
+async function apiPostTest(pathname, payload) {
+  return apiPost(pathname, payload, { baseUrl: TEST_API_BASE_URL });
+}
+
 async function safeTick() {
   if (!USE_TEST_API) return false;
   try {
-    await apiPost("/api/test/tick", {});
+    await apiPostTest("/api/test/tick", {});
     return true;
   } catch (_error) {
     return false;
@@ -380,14 +388,24 @@ async function createOfferForChannel(channelId, textSuffix, options = {}) {
     : scheduledAt + 6 * 60 * 60 * 1000;
 
   if (USE_TEST_API) {
-    const res = await apiPost("/api/test/offers", {
-      channelId: String(channelId),
-      scheduledAt,
-      dateFrom,
-      dateTo,
-      cpv: 900,
-      text: `[TDLIB E2E] ${textSuffix}`
-    });
+    let res = null;
+    try {
+      res = await apiPostTest("/api/test/offers", {
+        channelId: String(channelId),
+        scheduledAt,
+        dateFrom,
+        dateTo,
+        cpv: 900,
+        text: `[TDLIB E2E] ${textSuffix}`
+      });
+    } catch (error) {
+      const reason = error?.message || String(error);
+      throw new Error(
+        `Test API unavailable (${reason}). ` +
+        `Проверьте ALLOW_TEST_API=true в .env и локальный URL (${TEST_API_BASE_URL}) ` +
+        `или задайте CPVDEMO_TEST_API_BASE_URL=http://127.0.0.1:3030`
+      );
+    }
     if (!res?.offer?.id) throw new Error(`Test offer not created for channel=${channelId}`);
     return res.offer;
   }
@@ -723,7 +741,6 @@ async function runScenario(name, ctx) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  ensure(TDLIB_TEST_CHANNEL, "Set TDLIB_TEST_CHANNEL in .env (e.g. @mytestchannel)");
 
   const admin = await apiGet("/api/admin/state");
   const botUsername = String(admin?.bot?.username || "").trim();
@@ -733,6 +750,8 @@ async function main() {
   let ctx = null;
 
   if (args.mode === MODE_AUTO) {
+    ensure(TDLIB_TEST_CHANNEL, "Set TDLIB_TEST_CHANNEL in .env (e.g. @mytestchannel)");
+
     const tdl = loadTdl();
     if (TDLIB_PATH && fs.existsSync(TDLIB_PATH)) {
       tdl.configure({ tdjson: TDLIB_PATH });

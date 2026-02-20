@@ -1,0 +1,4 @@
+interface:
+  display_name: "CPV UX Guided Test"
+  short_description: "Run guided UX branches and capture feedback"
+  default_prompt: "Проведи меня по UX-сценариям CPV бота по шагам, фиксируй что нравится/не нравится и вноси минимальные правки только по выбранной ветке."

@@ -5,7 +5,8 @@
   "main": "cpvdemo/server.js",
   "scripts": {
     "start:cpvdemo": "node cpvdemo/server.js",
-    "start": "node cpvdemo/server.js"
+    "start": "node cpvdemo/server.js",
+    "test:tdlib": "node tests/tdlib/e2e-runner.js"
   },
   "repository": {
     "type": "git",

@@ -32,7 +32,7 @@ node tests/tdlib/e2e-runner.js --mode=guided --scenarios=manual_no_action_until_
 1. `BOT_TOKEN`
 2. `WEBHOOK_BASE_URL`
 3. `WEBHOOK_SECRET_TOKEN`
-4. `TDLIB_TEST_CHANNEL` (например `@mytestchannel`)
+4. `TDLIB_TEST_CHANNEL` (например `@mytestchannel`, только для `--mode=auto`)
 
 Для быстрого прогона:
 1. `ALLOW_TEST_API=true`
@@ -41,6 +41,7 @@ node tests/tdlib/e2e-runner.js --mode=guided --scenarios=manual_no_action_until_
 4. `AUTO_PAUSE_DURATION_MS=5000`
 5. `OFFER_DEADLINE_CHECK_INTERVAL_MS=500`
 6. (optional) `CPVDEMO_USE_TEST_API=true` (default in runner)
+7. (optional) `CPVDEMO_TEST_API_BASE_URL=http://127.0.0.1:3030` (куда стучаться в `/api/test/*`, полезно если `CPVDEMO_BASE_URL` указывает на ngrok)
 
 TDLib auth (`auto` mode):
 1. `TDLIB_AUTH_MODE=user` (default)

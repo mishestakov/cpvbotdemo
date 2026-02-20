@@ -632,3 +632,29 @@
   - Сценарий добавлен в `SCENARIOS` и в `DEFAULT_SCENARIOS`.
   - Обновлены `tests/tdlib/README.md` и `tests/tdlib/TDLIB_E2E_SPEC.md`.
 - Проверка: `node --check tests/tdlib/e2e-runner.js` — OK.
+
+### 2026-02-20T13:24:00+03:00
+- Запрос пользователя: в guided TDLib e2e раннере убрать обязательность `TDLIB_TEST_CHANNEL`.
+- Что сделано: в `tests/tdlib/e2e-runner.js` проверка `TDLIB_TEST_CHANNEL` перенесена внутрь ветки `--mode=auto`; для `--mode=guided` переменная больше не требуется.
+- Проверка: `node --check tests/tdlib/e2e-runner.js` — OK.
+
+### 2026-02-20T13:26:34+03:00
+- Запрос пользователя: исправить падение guided-сценария `manual_no_action_until_slot` с `POST /api/test/offers -> 404`.
+- Причина: test API в backend доступен только локально (`ALLOW_TEST_API=true` + localhost), а раннер отправлял `/api/test/*` в общий `CPVDEMO_BASE_URL` (часто это ngrok).
+- Что сделано:
+  - В `tests/tdlib/e2e-runner.js` добавлен отдельный base URL для test API: `CPVDEMO_TEST_API_BASE_URL` (по умолчанию `http://HOST:PORT`).
+  - `/api/test/offers` и `/api/test/tick` теперь идут через локальный test-base URL.
+  - Для недоступного test API добавлена явная ошибка с инструкцией (`ALLOW_TEST_API=true`, `CPVDEMO_TEST_API_BASE_URL`).
+  - В `tests/tdlib/README.md` обновлены требования env.
+- Проверка: `node --check tests/tdlib/e2e-runner.js` — OK.
+
+### 2026-02-20T13:31:00+03:00
+- Запрос пользователя: понять, подходит ли механизм skills для интерактивного UX-прогона по веткам с фиксацией фидбека и немедленными точечными правками.
+- Решение: создан repo-skill `.agents/skills/cpv-ux-guided-test`.
+- Что делает skill:
+  - ведет guided UX branch-by-branch,
+  - просит краткий вердикт после шага,
+  - вносит минимальные точечные правки,
+  - перезапускает только нужную ветку,
+  - фиксирует изменения в `creation.md` и завершает шаг вопросом про коммит.
+- Валидация: `quick_validate.py` -> `Skill is valid!`.
