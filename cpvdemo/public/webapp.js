@@ -15,6 +15,7 @@ const els = {
   slotDateInput: document.getElementById("waSlotDateInput"),
   slotList: document.getElementById("waSlotList"),
   slotApplyBtn: document.getElementById("waSlotApplyBtn"),
+  slotPublishNowBtn: document.getElementById("waSlotPublishNowBtn"),
   offers: document.getElementById("waOffers"),
   filterNew: document.getElementById("waFilterNew"),
   filterScheduled: document.getElementById("waFilterScheduled"),
@@ -88,7 +89,6 @@ function renderList(root, items, emptyText) {
       `<div class="planned-meta">CPV ${item.cpv} ₽ · доход ${item.estimatedIncome} ₽</div>` +
       `<div class="planned-meta pp-waOfferText">${text}</div>` +
       `<div class="pp-waActions">` +
-      (item.canPublishNow ? `<button class="pp-waAction success" data-offer-action="publish_now" data-offer-id="${item.id}">Опубликовать сейчас</button>` : "") +
       (item.canDecline ? `<button class="pp-waAction danger" data-offer-action="decline" data-offer-id="${item.id}">Отклонить</button>` : "") +
       (item.canPickTime ? `<button class="pp-waAction ${(item.status === "pending_approval") ? "success" : "primary"}" data-offer-action="pick_time" data-offer-id="${item.id}">${item.status === "pending_approval" ? "Взять в работу" : "Изменить время"}</button>` : "") +
       (item.canCancelScheduled ? `<button class="pp-waAction danger" data-offer-action="cancel_scheduled" data-offer-id="${item.id}">Отказаться</button>` : "") +
@@ -115,7 +115,7 @@ function renderOffers() {
   const upcoming = Array.isArray(offers.upcoming) ? offers.upcoming : [];
   const newItems = upcoming.filter((item) => item.status === "pending_approval");
   const scheduled = mode === "auto_with_precheck"
-    ? upcoming.filter((item) => item.status === "pending_precheck" || item.status === "scheduled")
+    ? upcoming.filter((item) => item.status === "scheduled")
     : upcoming.filter((item) => item.status === "scheduled");
   const published = Array.isArray(offers.published) ? offers.published : [];
   const failed = Array.isArray(offers.failed) ? offers.failed : [];
@@ -381,6 +381,15 @@ function openSlotSheet(offerId, pages) {
   const lastPage = slotPickerPages[slotPickerPages.length - 1];
   els.slotDateInput.max = lastPage?.dateKey || toDateInputValue(dt);
   renderSlotOptions();
+  const source = [
+    ...(Array.isArray(currentState?.offers?.upcoming) ? currentState.offers.upcoming : []),
+    ...(Array.isArray(currentState?.offers?.published) ? currentState.offers.published : []),
+    ...(Array.isArray(currentState?.offers?.failed) ? currentState.offers.failed : [])
+  ];
+  const offer = source.find((item) => Number(item?.id) === slotPickerOfferId) || null;
+  if (els.slotPublishNowBtn) {
+    els.slotPublishNowBtn.hidden = !Boolean(offer?.canPublishNow);
+  }
   els.slotSheet.hidden = false;
   return true;
 }
@@ -391,6 +400,7 @@ function closeSlotSheet() {
   slotPickerPages = [];
   slotPickerDateKey = "";
   selectedSlotTs = 0;
+  if (els.slotPublishNowBtn) els.slotPublishNowBtn.hidden = true;
 }
 
 function handleSlotDateChange() {
@@ -410,7 +420,7 @@ async function handleOfferAction(action, offerId) {
       const slotsRes = await apiGet(`/api/webapp/offer-pages?offerId=${offerId}`);
       const pages = Array.isArray(slotsRes?.pages) ? slotsRes.pages : [];
       if (!flattenSlotsFromPages(pages).length) {
-      setText(els.pauseHint, "Нет доступных слотов в окне кампании.");
+        setText(els.pauseHint, "Нет доступных слотов в окне кампании.");
         return;
       }
       openSlotSheet(offerId, pages);
@@ -480,6 +490,21 @@ async function boot() {
       closeSlotSheet();
       await loadState();
       setText(els.pauseHint, "Время публикации обновлено.");
+    } catch (err) {
+      setText(els.pauseHint, `Ошибка: ${err?.message || String(err)}`);
+    }
+  });
+  els.slotPublishNowBtn?.addEventListener("click", async () => {
+    if (!slotPickerOfferId) return;
+    try {
+      await apiPost("/api/webapp/offer-action", {
+        action: "publish_now",
+        offerId: slotPickerOfferId,
+        channelId: currentChannelId || undefined
+      });
+      closeSlotSheet();
+      await loadState();
+      setText(els.pauseHint, "Публикация перенесена на ближайшее время.");
     } catch (err) {
       setText(els.pauseHint, `Ошибка: ${err?.message || String(err)}`);
     }

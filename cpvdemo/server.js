@@ -27,7 +27,6 @@ const WEBAPP_AUTH_TTL_SEC = Math.max(60, Number(process.env.WEBAPP_AUTH_TTL_SEC 
 
 const BOT_API_TIMEOUT_MS = parseMsEnv("BOT_API_TIMEOUT_MS", 20_000, 3_000);
 const BOT_CONNECT_RETRY_INTERVAL_MS = parseMsEnv("BOT_CONNECT_RETRY_INTERVAL_MS", 5_000, 1_000);
-const PRECHECK_DECISION_MS = parseMsEnv("PRECHECK_DECISION_MS", 60_000, 10_000);
 const OFFER_DEADLINE_CHECK_INTERVAL_MS = parseMsEnv("OFFER_DEADLINE_CHECK_INTERVAL_MS", 5_000, 1_000);
 const AUTO_PAUSE_DURATION_MS = parseMsEnv("AUTO_PAUSE_DURATION_MS", 24 * 60 * 60 * 1000, 1_000);
 const RU_HUMAN_DATE_TIME_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
@@ -143,6 +142,11 @@ function isOfferAwaitingDecision(offer) {
 
 function canRescheduleOffer(offer, nowTs = Date.now()) {
   if (!isOfferActive(offer)) return false;
+  const status = String(offer?.status || "");
+  if (status === "pending_approval") {
+    const endAt = Number(offer?.availabilityToAt || 0);
+    return Number.isFinite(endAt) && endAt > nowTs;
+  }
   const scheduledAt = Number(offer?.scheduledAt || 0);
   return Number.isFinite(scheduledAt) && scheduledAt > nowTs;
 }
@@ -239,6 +243,11 @@ function normalizeDb(raw) {
     offer.availabilityToAt = normalizeTimestampMs(offer.availabilityToAt, fallbackAt);
     if (offer.availabilityToAt < offer.availabilityFromAt) {
       offer.availabilityToAt = offer.availabilityFromAt;
+    }
+    if (String(offer.status || "") === "pending_precheck") {
+      offer.status = "scheduled";
+      offer.decisionDeadlineAt = null;
+      offer.uiState = "main";
     }
   }
 
@@ -558,8 +567,8 @@ function buildWebAppOfferPages(offer) {
 }
 
 function canWebAppApprove(offer) {
-  const status = String(offer?.status || "");
-  return status === "pending_precheck";
+  void offer;
+  return false;
 }
 
 function canWebAppDecline(offer) {
@@ -604,10 +613,7 @@ function listPlannedOffersForBlogger(bloggerId) {
 
       const status = String(offer.status || "");
       const scheduledAt = Number(offer.scheduledAt || 0);
-      const isDeadlineStatus =
-        status === "pending_precheck" ||
-        status === "pending_approval" ||
-        status === "scheduled";
+      const isDeadlineStatus = status === "pending_precheck" || status === "scheduled";
       if (isDeadlineStatus && Number.isFinite(scheduledAt) && scheduledAt < now) return false;
       return true;
     })
@@ -1265,18 +1271,12 @@ function buildOfferKeyboard(offer, pageFromCallback) {
   }
 
   if (offer.status === "pending_precheck") {
-    if (canPublishNow(offer)) {
-      rows.push([{ text: BT.buttons.publishNow, callback_data: `of:bn:${offer.id}` }]);
-    }
     rows.push([{ text: BT.buttons.changeTime, callback_data: `of:tm:${offer.id}`, style: "primary" }]);
     rows.push([{ text: BT.buttons.decline, callback_data: `of:dr:${offer.id}`, style: "danger" }]);
   } else if (offer.status === "pending_approval") {
     rows.push([{ text: BT.buttons.takeInWork, callback_data: `of:tm:${offer.id}`, style: "success" }]);
     rows.push([{ text: BT.buttons.decline, callback_data: `of:dr:${offer.id}`, style: "danger" }]);
   } else if (offer.status === "scheduled") {
-    if (canPublishNow(offer)) {
-      rows.push([{ text: BT.buttons.publishNow, callback_data: `of:bn:${offer.id}` }]);
-    }
     if (canRescheduleOffer(offer)) {
       rows.push([{ text: BT.buttons.changeTime, callback_data: `of:tm:${offer.id}`, style: "primary" }]);
     }
@@ -1450,7 +1450,7 @@ function createOffer({ blogger, channel, scheduledAt, dateFrom, dateTo, textRaw,
   const valueCpv = Number.isFinite(Number(cpv)) ? Math.max(100, Math.round(Number(cpv))) : 900;
   const estimatedIncome = Math.round(valueCpv * 0.85);
 
-  const status = mode === "manual_approval" ? "pending_approval" : "pending_precheck";
+  const status = mode === "manual_approval" ? "pending_approval" : "scheduled";
 
   const offer = {
     id,
@@ -1465,7 +1465,7 @@ function createOffer({ blogger, channel, scheduledAt, dateFrom, dateTo, textRaw,
     textRaw: adText,
     textMarked: buildMarkedAdText(adText, `demo-${id}`),
     eridTag: `demo-${id}`,
-    decisionDeadlineAt: status === "pending_precheck" ? Math.min(scheduledAt, Date.now() + PRECHECK_DECISION_MS) : null,
+    decisionDeadlineAt: null,
     selectedDatePage: 0,
     uiState: "main",
     bloggerDeclineReason: null,
@@ -1609,9 +1609,7 @@ async function rescheduleOffer(offer, slotTs) {
 
 async function applyRescheduledTime(offer, slotTs) {
   offer.scheduledAt = slotTs;
-  if (offer.status === "pending_precheck") {
-    offer.decisionDeadlineAt = Math.min(slotTs, Date.now() + PRECHECK_DECISION_MS);
-  }
+  if (offer.status === "pending_precheck") offer.status = "scheduled";
   if (offer.status === "pending_approval") {
     offer.status = "scheduled";
     offer.decisionDeadlineAt = null;
@@ -1643,12 +1641,16 @@ async function processOfferDeadlines() {
   try {
     const now = Date.now();
     for (const offer of listOffers()) {
-      if (offer.status === "pending_precheck" && now >= Number(offer.decisionDeadlineAt || 0)) {
-        await approveOffer(offer);
+      if (offer.status === "pending_precheck") {
+        offer.status = "scheduled";
+        offer.decisionDeadlineAt = null;
+        db.offers[String(offer.id)] = offer;
+        saveDb(db);
+        upsertOfferMessage(offer).catch(() => {});
         continue;
       }
 
-      if (offer.status === "pending_approval" && now >= Number(offer.scheduledAt)) {
+      if (offer.status === "pending_approval" && now >= Number(offer.availabilityToAt || 0)) {
         offer.status = "archived_not_published";
         offer.decisionDeadlineAt = null;
         offer.uiState = "main";
@@ -2130,19 +2132,6 @@ async function processTelegramUpdate(update) {
 
   if (message?.chat_shared) {
     await handleChatSharedMessage(message);
-    return;
-  }
-
-  if (/^\/mode(?:@\w+)?(?:\s+.*)?$/i.test(text)) {
-    const chatId = Number(message?.chat?.id || 0);
-    await sendBotMessage(chatId, "Режим публикации теперь настраивается только в админке.");
-    return;
-  }
-
-  if (/^\/pause(?:@\w+)?(?:\s+.*)?$/i.test(text)) {
-    const chatId = Number(message?.chat?.id || 0);
-    const blogger = getBloggerById(String(message?.from?.id || ""));
-    await sendPauseChooser(chatId, blogger);
     return;
   }
 

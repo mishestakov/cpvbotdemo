@@ -16,96 +16,59 @@
     'rankSpacing': 56
   }
 }}%%
-flowchart TB
+flowchart LR
 
   OFFER_CREATED([Оффер создан]):::core
+  CANCEL_AD[cancelled_by_advertiser]:::terminal
 
-  subgraph RULES["Общие правила"]
+  subgraph PRECHECK["1. С предпросмотром (`auto_with_precheck`)"]
     direction TB
-    R1["Для любого active-статуса:<br/>- Отмена блогером -> cancelled_by_blogger<br/>- Отмена рекламодателем -> cancelled_by_advertiser"]:::shared
+    P_SCHEDULED[scheduled]:::precheck
+    P_PICK[pick_time]:::shared
+    P_CANCELLED[cancelled_by_blogger]:::terminal
+    P_REWARDED[rewarded]:::success
+    P_ERROR[auto_publish_error]:::error
+
+    P_SCHEDULED -.->|Изменить время| P_PICK
+    P_PICK -->|Слот выбран| P_SCHEDULED
+    P_SCHEDULED -->|Отказаться| P_CANCELLED
+    P_CANCELLED -.->|Вернуть в работу| P_PICK
+    P_SCHEDULED -.->|Время выхода: успех| P_REWARDED
+    P_SCHEDULED -.->|Время выхода: ошибка| P_ERROR
   end
 
-  subgraph LANES["Режимы публикации"]
-    direction LR
+  subgraph APPROVAL["2. С подтверждением (`manual_approval`)"]
+    direction TB
+    A_PENDING[pending_approval]:::approval
+    A_PICK[pick_time]:::shared
+    A_SCHEDULED[scheduled]:::approval
+    A_DECLINED[declined_by_blogger]:::terminal
+    A_CANCELLED[cancelled_by_blogger]:::terminal
+    A_ARCHIVED[archived_not_published]:::terminal
+    A_REWARDED[rewarded]:::success
+    A_ERROR[auto_publish_error]:::error
 
-    subgraph AUTO["1. Автоматически"]
-      direction TB
-      A_SCHEDULED[scheduled]:::auto
-      A_REWARDED[rewarded]:::success
-      A_ERROR[auto_publish_error]:::error
-      A_SCHEDULED -.->|Время выхода успех| A_REWARDED
-      A_SCHEDULED -.->|Время выхода ошибка| A_ERROR
-    end
-
-    subgraph PRECHECK["2. С предпросмотром"]
-      direction TB
-      P_PENDING[pending_precheck]:::precheck
-      P_PICK[pick_time]:::shared
-      P_SCHEDULED[scheduled]:::precheck
-      P_DECLINED[declined_by_blogger]:::terminal
-      P_REWARDED[rewarded]:::success
-      P_ERROR[auto_publish_error]:::error
-      P_PENDING -.->|Дедлайн истек| P_SCHEDULED
-      P_PENDING -->|Отклонить| P_DECLINED
-      P_PENDING -.->|Изменить время| P_PICK
-      P_PICK -->|Слот выбран| P_PENDING
-      P_SCHEDULED -.->|Время выхода успех| P_REWARDED
-      P_SCHEDULED -.->|Время выхода ошибка| P_ERROR
-    end
-
-    subgraph APPROVAL["3. Только после подтверждения"]
-      direction TB
-      AP_PENDING[pending_approval]:::approval
-      AP_PICK[pick_time]:::shared
-      AP_SCHEDULED[scheduled]:::approval
-      AP_ARCHIVED[archived_not_published]:::terminal
-      AP_DECLINED[declined_by_blogger]:::terminal
-      AP_REWARDED[rewarded]:::success
-      AP_ERROR[auto_publish_error]:::error
-      AP_PENDING -->|Взять в работу| AP_PICK
-      AP_PENDING -.->|Время вышло| AP_ARCHIVED
-      AP_PENDING -->|Отклонить| AP_DECLINED
-      AP_PICK -->|Слот выбран| AP_SCHEDULED
-      AP_SCHEDULED -.->|Изменить время| AP_PICK
-      AP_SCHEDULED -.->|Время выхода успех| AP_REWARDED
-      AP_SCHEDULED -.->|Время выхода ошибка| AP_ERROR
-    end
-
-    subgraph MANUAL["4. Ручная публикация"]
-      direction TB
-      M_PENDING[pending_manual_posting]:::manual
-      M_PICK[pick_time]:::shared
-      M_WAITING[manual_waiting_publication]:::manual
-      M_QUEUED[manual_queued_publication]:::manual
-      M_FOUND[manual_publication_found]:::manual
-      M_REWARDED[rewarded]:::success
-      M_ARCHIVED[archived_not_published]:::terminal
-      M_DECLINED[declined_by_blogger]:::terminal
-      M_PENDING -->|Получить ERID| M_WAITING
-      M_PENDING -.->|Время вышло| M_ARCHIVED
-      M_PENDING -->|Отклонить| M_DECLINED
-      M_PENDING -.->|Выбрать другое время| M_PICK
-      M_PICK -->|Слот выбран| M_PENDING
-      M_WAITING -->|Добавил в очередь постинга| M_QUEUED
-      M_WAITING -->|Найден пост с ERID| M_FOUND
-      M_WAITING -.->|Время вышло| M_ARCHIVED
-      M_QUEUED -->|Найден пост с ERID| M_FOUND
-      M_QUEUED -.->|Время вышло| M_ARCHIVED
-      M_FOUND -->|Удержание 1 минута| M_REWARDED
-    end
-
+    A_PENDING -->|Взять в работу| A_PICK
+    A_PICK -->|Слот выбран| A_SCHEDULED
+    A_PENDING -->|Отклонить| A_DECLINED
+    A_PENDING -.->|Окно кампании завершилось| A_ARCHIVED
+    A_SCHEDULED -.->|Изменить время| A_PICK
+    A_SCHEDULED -->|Отказаться| A_CANCELLED
+    A_CANCELLED -.->|Вернуть в работу| A_PICK
+    A_SCHEDULED -.->|Время выхода: успех| A_REWARDED
+    A_SCHEDULED -.->|Время выхода: ошибка| A_ERROR
   end
 
-  OFFER_CREATED -->|mode=auto| A_SCHEDULED
-  OFFER_CREATED -->|mode=auto_with_precheck| P_PENDING
-  OFFER_CREATED -->|mode=manual_approval| AP_PENDING
-  OFFER_CREATED -->|mode=manual_posting| M_PENDING
+  OFFER_CREATED -->|mode=auto_with_precheck| P_SCHEDULED
+  OFFER_CREATED -->|mode=manual_approval| A_PENDING
+
+  P_SCHEDULED -.->|Отмена рекламодателем| CANCEL_AD
+  A_PENDING -.->|Отмена рекламодателем| CANCEL_AD
+  A_SCHEDULED -.->|Отмена рекламодателем| CANCEL_AD
 
   classDef core fill:#E2E8F0,stroke:#475569,stroke-width:1.8px,color:#0F172A;
-  classDef auto fill:#DCFCE7,stroke:#166534,stroke-width:1.8px,color:#14532D;
   classDef precheck fill:#DBEAFE,stroke:#1D4ED8,stroke-width:1.8px,color:#1E3A8A;
   classDef approval fill:#FEF3C7,stroke:#B45309,stroke-width:1.8px,color:#78350F;
-  classDef manual fill:#FCE7F3,stroke:#BE185D,stroke-width:1.8px,color:#831843;
   classDef shared fill:#E0F2FE,stroke:#0369A1,stroke-width:1.8px,color:#0C4A6E;
   classDef terminal fill:#F1F5F9,stroke:#475569,stroke-width:1.8px,color:#0F172A;
   classDef error fill:#FEE2E2,stroke:#B91C1C,stroke-width:1.8px,color:#7F1D1D;
