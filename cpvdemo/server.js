@@ -1337,39 +1337,8 @@ async function ensureManualApprovalTopic(offer) {
 }
 
 async function finalizeManualApprovalTopicIfNeeded(offer) {
-  if (!offer || offer.modeAtCreation !== "manual_approval") return;
-  const threadId = getOfferThreadId(offer);
-  if (!threadId || offer.topicClosedAt) return;
-  const finalStatuses = new Set([
-    "declined_by_blogger",
-    "cancelled_by_advertiser",
-    "cancelled_by_blogger",
-    "archived_not_published",
-    "auto_publish_error",
-    "rewarded"
-  ]);
-  if (!finalStatuses.has(String(offer.status || ""))) return;
-
-  offer.topicClosedAt = Date.now();
-  db.offers[String(offer.id)] = offer;
-  saveDb(db);
-
-  await sendOfferMessage(offer, manualApprovalTopicFinalSummary(offer));
-  setTimeout(() => {
-    tgApiWithRetry("deleteForumTopic", {
-      chat_id: offer.chatId,
-      message_thread_id: threadId
-    })
-      .then(() =>
-        sendBotMessage(
-          offer.chatId,
-          BT.offer.flow.topicClosedInMain(offer.id, statusTitle(offer.status))
-        )
-      )
-      .catch((err) => {
-        console.warn(`deleteForumTopic failed for offer #${offer.id}: ${formatError(err)}`);
-      });
-  }, 3000);
+  void offer;
+  return;
 }
 
 function offerSummaryText(offer) {
