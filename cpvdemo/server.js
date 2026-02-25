@@ -19,10 +19,12 @@ const DB_PATH = path.join(DATA_DIR, "db.json");
 
 const BOT_TOKEN = String(process.env.BOT_TOKEN || "").trim();
 const WEBHOOK_BASE_URL = String(process.env.WEBHOOK_BASE_URL || "").trim().replace(/\/+$/, "");
+const PUBLIC_BASE_URL = String(process.env.PUBLIC_BASE_URL || WEBHOOK_BASE_URL || "").trim().replace(/\/+$/, "");
 const WEBHOOK_SECRET_TOKEN = String(process.env.WEBHOOK_SECRET_TOKEN || "").trim();
 const WEBHOOK_PATH = "/api/telegram/webhook";
 const WEBHOOK_DROP_PENDING_UPDATES = String(process.env.WEBHOOK_DROP_PENDING_UPDATES || "true").trim().toLowerCase() !== "false";
 const ALLOW_TEST_API = String(process.env.ALLOW_TEST_API || "false").trim().toLowerCase() === "true";
+const WEBAPP_AUTH_TTL_SEC = Math.max(60, Number(process.env.WEBAPP_AUTH_TTL_SEC || 600) || 600);
 
 const BOT_API_TIMEOUT_MS = parseMsEnv("BOT_API_TIMEOUT_MS", 20_000, 3_000);
 const BOT_CONNECT_RETRY_INTERVAL_MS = parseMsEnv("BOT_CONNECT_RETRY_INTERVAL_MS", 5_000, 1_000);
@@ -368,6 +370,12 @@ function getBloggerById(bloggerId) {
   return db.bloggers[String(bloggerId || "").trim()] || null;
 }
 
+function getBloggerByTgUserId(tgUserId) {
+  const target = Number(tgUserId || 0);
+  if (!target) return null;
+  return listBloggers().find((item) => Number(item?.tgUserId || 0) === target) || null;
+}
+
 function getChannelById(channelId) {
   return db.channels[String(channelId || "").trim()] || null;
 }
@@ -389,6 +397,111 @@ function getChannelForBlogger(bloggerId) {
 
 function getSessionByToken(token) {
   return db.authSessions[String(token || "").trim()] || null;
+}
+
+function buildWebAppUrl() {
+  if (!PUBLIC_BASE_URL) return "";
+  return `${PUBLIC_BASE_URL}/cpvdemo/webapp`;
+}
+
+function buildWebAppKeyboard() {
+  const url = buildWebAppUrl();
+  if (!url) return null;
+  return {
+    keyboard: [[{
+      text: "Открыть кабинет",
+      web_app: { url }
+    }]],
+    resize_keyboard: true
+  };
+}
+
+function parseWebAppInitDataFromReq(req, url, body) {
+  const header = String(req?.headers?.["x-telegram-webapp-init-data"] || "").trim();
+  return String(body?.initData || url?.searchParams?.get("initData") || header || "").trim();
+}
+
+function validateWebAppInitData(initDataRaw) {
+  if (!BOT_TOKEN) return { ok: false, error: "BOT_TOKEN is missing" };
+  const initData = String(initDataRaw || "").trim();
+  if (!initData) return { ok: false, error: "Missing initData" };
+
+  const params = new URLSearchParams(initData);
+  const hash = String(params.get("hash") || "").trim();
+  if (!hash) return { ok: false, error: "Missing hash" };
+
+  const authDate = Number(params.get("auth_date") || 0);
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(authDate) || authDate <= 0) return { ok: false, error: "Invalid auth_date" };
+  if (nowSec - authDate > WEBAPP_AUTH_TTL_SEC) return { ok: false, error: "initData expired" };
+
+  const lines = [];
+  for (const [k, v] of params.entries()) {
+    if (k === "hash") continue;
+    lines.push(`${k}=${v}`);
+  }
+  lines.sort();
+  const dataCheckString = lines.join("\n");
+  const secret = crypto.createHmac("sha256", "WebAppData").update(BOT_TOKEN).digest();
+  const calc = crypto.createHmac("sha256", secret).update(dataCheckString).digest("hex");
+
+  const hashBuf = Buffer.from(hash, "hex");
+  const calcBuf = Buffer.from(calc, "hex");
+  if (hashBuf.length !== calcBuf.length || !crypto.timingSafeEqual(hashBuf, calcBuf)) {
+    return { ok: false, error: "Invalid hash" };
+  }
+
+  let user = null;
+  try {
+    user = JSON.parse(String(params.get("user") || "{}"));
+  } catch {
+    user = null;
+  }
+  const tgUserId = Number(user?.id || 0);
+  if (!tgUserId) return { ok: false, error: "Missing user id" };
+  return { ok: true, tgUserId };
+}
+
+function ensureWebAppContextByInitData(initDataRaw) {
+  const auth = validateWebAppInitData(initDataRaw);
+  if (!auth.ok) return { ok: false, code: 401, error: auth.error };
+  const blogger = getBloggerByTgUserId(auth.tgUserId);
+  if (!blogger) return { ok: false, code: 404, error: "Blogger not found" };
+  const channel = getChannelForBlogger(blogger.id);
+  if (!channel) return { ok: false, code: 400, error: "Channel is not selected yet" };
+  return { ok: true, blogger, channel };
+}
+
+async function clearBotCommandMenus() {
+  const scopes = [
+    { type: "default" },
+    { type: "all_private_chats" },
+    { type: "all_group_chats" },
+    { type: "all_chat_administrators" }
+  ];
+  for (const scope of scopes) {
+    try {
+      await tgApiWithRetry("deleteMyCommands", { scope });
+    } catch (err) {
+      console.warn(`deleteMyCommands failed for scope=${scope.type}: ${formatError(err)}`);
+    }
+  }
+}
+
+async function setDefaultWebAppMenuButton() {
+  const url = buildWebAppUrl();
+  if (!url) return;
+  try {
+    await tgApiWithRetry("setChatMenuButton", {
+      menu_button: {
+        type: "web_app",
+        text: "Кабинет",
+        web_app: { url }
+      }
+    });
+  } catch (err) {
+    console.warn(`setChatMenuButton default failed: ${formatError(err)}`);
+  }
 }
 
 function getLatestAwaitingSessionForUser(userId) {
@@ -567,6 +680,54 @@ function stateSnapshotForToken(token) {
   };
 }
 
+function webAppSnapshotForBlogger(blogger, selectedChannelId) {
+  const channels = listChannelsForBlogger(blogger.id);
+  if (!channels.length) return null;
+  const selectedChannel = selectedChannelId
+    ? channels.find((item) => String(item.id) === String(selectedChannelId))
+    : null;
+  const channel = selectedChannel || getChannelForBlogger(blogger.id) || channels[0];
+  if (!channel) return null;
+
+  const upcoming = listPlannedOffersForBlogger(blogger.id).filter(
+    (item) => String(item.channelId) === String(channel.id)
+  );
+  const archive = listArchiveOffersForBlogger(blogger.id).filter(
+    (item) => String(item.channelId) === String(channel.id)
+  );
+  const published = archive.filter((item) => item.publicationState === "published");
+  const failed = archive.filter((item) => item.publicationState === "not_published");
+
+  return {
+    ok: true,
+    blogger: {
+      id: blogger.id,
+      tgUsername: blogger.tgUsername || null
+    },
+    channels: channels.map((item) => ({
+      id: item.id,
+      title: item.title || "",
+      username: item.username || "",
+      postingModeTitle: modeTitle(item.postingMode),
+      pauseActive: isChannelAutoPaused(item),
+      pauseUntilText: isChannelAutoPaused(item) ? formatDateTimeHumanRu(item.autoPausedUntilAt) : null
+    })),
+    selectedChannelId: channel.id,
+    channel: toChannelDto(channel, blogger),
+    pause: {
+      supported: modeSupportsPause(channel?.postingMode),
+      active: isChannelAutoPaused(channel),
+      untilAt: Number(channel?.autoPausedUntilAt || 0) || null,
+      untilText: isChannelAutoPaused(channel) ? formatDateTimeHumanRu(channel.autoPausedUntilAt) : null
+    },
+    offers: {
+      upcoming,
+      published,
+      failed
+    }
+  };
+}
+
 function advertiserSnapshot() {
   return {
     bloggers: listConnectedBloggersForAdvertiser(),
@@ -631,6 +792,7 @@ function serveStatic(req, res, url) {
   if (pathname === "/cpvdemo/auth" || pathname === "/cpvdemo/auth/") pathname = "/auth.html";
   if (pathname === "/cpvdemo/advertiser" || pathname === "/cpvdemo/advertiser/") pathname = "/advertiser.html";
   if (pathname === "/cpvdemo/admin" || pathname === "/cpvdemo/admin/") pathname = "/admin.html";
+  if (pathname === "/cpvdemo/webapp" || pathname === "/cpvdemo/webapp/") pathname = "/webapp.html";
   if (pathname.startsWith("/cpvdemo/")) pathname = pathname.slice("/cpvdemo".length);
   if (pathname === "/auth" || pathname === "/auth/") pathname = "/auth.html";
 
@@ -842,6 +1004,24 @@ function markSessionsConnectedForBlogger(bloggerId) {
     changed = true;
   }
   if (changed) saveDb(db);
+}
+
+function createAwaitingChannelSession(blogger, tgUserId, tgUsername) {
+  const token = crypto.randomBytes(8).toString("hex");
+  const now = Date.now();
+  db.authSessions[token] = {
+    token,
+    createdAt: now,
+    expiresAt: now + AUTH_SESSION_TTL_MS,
+    status: "awaiting_channel",
+    tgUserId: tgUserId || null,
+    tgUsername: tgUsername || null,
+    bloggerId: blogger?.id || null,
+    connectedAt: now,
+    error: null
+  };
+  saveDb(db);
+  return token;
 }
 
 async function hydrateChannelFromTelegram(channel) {
@@ -1595,6 +1775,18 @@ async function handleStartMessage(message) {
   const payload = parseStartPayload(message?.text);
 
   if (!payload) {
+    const blogger = getBloggerById(String(message?.from?.id || ""));
+    if (blogger) {
+      createAwaitingChannelSession(blogger, message?.from?.id || null, message?.from?.username || null);
+      markSessionsAwaitingChannelForBlogger(blogger.id);
+      const sent = await sendBotMessage(
+        chatId,
+        BT.start.successChooseChannel,
+        buildChannelRequestKeyboard()
+      );
+      if (!sent) await sendBotMessage(chatId, BT.start.chooseChannelButtonFailed);
+      return;
+    }
     await sendBotMessage(chatId, BT.start.needAuthLink);
     return;
   }
@@ -1690,6 +1882,8 @@ async function handleChatSharedMessage(message) {
       BT.channelSelection.addBotAndReturn(botState.username),
       removeKeyboardMarkup()
     );
+    const keyboard = buildWebAppKeyboard(blogger.id);
+    if (keyboard) await sendBotMessage(privateChatId, "Кабинет доступен по кнопке ниже.", keyboard);
     return;
   } else {
     await sendBotMessage(
@@ -1697,6 +1891,8 @@ async function handleChatSharedMessage(message) {
       BT.channelSelection.readyAndConnected,
       removeKeyboardMarkup()
     );
+    const keyboard = buildWebAppKeyboard(blogger.id);
+    if (keyboard) await sendBotMessage(privateChatId, "Кабинет доступен по кнопке ниже.", keyboard);
     return;
   }
 }
@@ -2202,6 +2398,9 @@ async function startBot() {
       drop_pending_updates: WEBHOOK_DROP_PENDING_UPDATES
     });
 
+    await clearBotCommandMenus();
+    await setDefaultWebAppMenuButton();
+
     botState.enabled = true;
     botState.lastError = null;
     console.log(`Bot connected: @${botState.username || "unknown"}; webhook=${webhookUrl}`);
@@ -2236,6 +2435,23 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/api/state" && req.method === "GET") {
     const token = String(url.searchParams.get("token") || "").trim();
     sendJson(res, 200, stateSnapshotForToken(token));
+    return;
+  }
+
+  if (url.pathname === "/api/webapp/state" && req.method === "GET") {
+    const initData = parseWebAppInitDataFromReq(req, url, null);
+    const ctx = ensureWebAppContextByInitData(initData);
+    if (!ctx.ok) {
+      sendJson(res, ctx.code, { error: ctx.error });
+      return;
+    }
+    const channelId = String(url.searchParams.get("channelId") || "").trim();
+    const snapshot = webAppSnapshotForBlogger(ctx.blogger, channelId || null);
+    if (!snapshot) {
+      sendJson(res, 404, { error: "Channel not found" });
+      return;
+    }
+    sendJson(res, 200, snapshot);
     return;
   }
 
@@ -2438,6 +2654,59 @@ const server = http.createServer(async (req, res) => {
     saveDb(db);
 
     sendJson(res, 200, { ok: true, weeklyPostLimit, scheduleSlots });
+    return;
+  }
+
+  if (url.pathname === "/api/webapp/pause" && req.method === "POST") {
+    const body = await readJsonBody(req);
+    const initData = parseWebAppInitDataFromReq(req, url, body);
+    const ctx = ensureWebAppContextByInitData(initData);
+    if (!ctx.ok) {
+      sendJson(res, ctx.code, { error: ctx.error });
+      return;
+    }
+    const channelId = String(body.channelId || "").trim();
+    const targetChannel = channelId
+      ? listChannelsForBlogger(ctx.blogger.id).find((item) => String(item.id) === channelId)
+      : ctx.channel;
+    if (!targetChannel) {
+      sendJson(res, 404, { error: "Channel not found" });
+      return;
+    }
+    if (!modeSupportsPause(targetChannel.postingMode)) {
+      sendJson(res, 400, { error: "Pause is not supported for this mode" });
+      return;
+    }
+
+    const action = String(body.action || "").trim();
+    const durationDays = Number(body.durationDays);
+    if (action === "pause24h" || action === "pause") {
+      const allowedDays = new Set([1, 2, 7, 14, 30]);
+      const selectedDays = action === "pause24h" ? 1 : durationDays;
+      if (!allowedDays.has(selectedDays)) {
+        sendJson(res, 400, { error: "Invalid durationDays" });
+        return;
+      }
+      targetChannel.autoPausedUntilAt = Date.now() + selectedDays * 24 * 60 * 60 * 1000;
+      targetChannel.autoPauseMessageId = null;
+      targetChannel.updatedAt = Date.now();
+      db.channels[targetChannel.id] = targetChannel;
+      saveDb(db);
+      sendJson(res, 200, { ok: true, active: true, untilAt: targetChannel.autoPausedUntilAt });
+      return;
+    }
+
+    if (action === "resume") {
+      targetChannel.autoPausedUntilAt = null;
+      targetChannel.autoPauseMessageId = null;
+      targetChannel.updatedAt = Date.now();
+      db.channels[targetChannel.id] = targetChannel;
+      saveDb(db);
+      sendJson(res, 200, { ok: true, active: false, untilAt: null });
+      return;
+    }
+
+    sendJson(res, 400, { error: "Invalid action" });
     return;
   }
 

@@ -789,3 +789,45 @@
   - `cpvdemo/server.js`: webhook подписан только на `message` и `callback_query`.
   - `cpvdemo/bot-texts.js`: удалены тексты и кнопки ручного режима, обновлён hint по `/pause` (только 2 режима).
   - `product-flow.md`: переписан под актуальную продуктовую модель из двух режимов.
+
+### 2026-02-25T10:10:00+03:00
+- Запрос пользователя: начать шаг 3 плана — WebApp-каркас блогера (история + пауза), открытие из бота.
+- Что сделано:
+  - `cpvdemo/public/webapp.html` + `cpvdemo/public/webapp.js`: добавлен read-only кабинет блогера с 3 лентами (`предстоящие`, `успешные`, `несостоявшиеся`) и кнопкой паузы/возобновления.
+  - `cpvdemo/server.js`: добавлены API `GET /api/webapp/state` и `POST /api/webapp/pause` (pause24h/resume).
+  - `cpvdemo/server.js`: добавлен `web_app` вход из бота — после выбора канала и при `/start` без payload бот присылает кнопку `Открыть кабинет`.
+  - `cpvdemo/server.js`: добавлен маршрут статики `/cpvdemo/webapp`.
+  - `cpvdemo/public/proto.css`: добавлены стили блока WebApp.
+
+### 2026-02-25T10:20:00+03:00
+- Запрос пользователя: убрать меню команд у бота и оставить вход через WebApp.
+- Что сделано:
+  - `cpvdemo/server.js`: на старте добавлен вызов `deleteMyCommands` для основных scope, чтобы очистить список команд в меню.
+  - `cpvdemo/server.js`: добавлена установка `setChatMenuButton` (`MenuButtonWebApp`) с текстом `Кабинет` для подключённых блогеров.
+  - `cpvdemo/server.js`: после успешного выбора канала (`chat_shared`) меню-кнопка WebApp выставляется сразу для этого блогера.
+
+### 2026-02-25T10:40:00+03:00
+- Запрос пользователя: перейти на secure-авторизацию WebApp и зафиксировать это в продуктовом документе.
+- Что сделано:
+  - `cpvdemo/server.js`: для `/api/webapp/state` и `/api/webapp/pause` убран доступ по `token`/`tgUserId`; теперь доступ только по Telegram `initData`.
+  - `cpvdemo/server.js`: добавлена серверная валидация `initData` (подпись `hash`, `auth_date` TTL, извлечение `user.id`) и привязка к блогеру через `tgUserId`.
+  - `cpvdemo/server.js`: `setChatMenuButton` переведён на один default `MenuButtonWebApp` (`/cpvdemo/webapp`) без персональных URL.
+  - `cpvdemo/public/webapp.js`: WebApp шлёт `initData` в заголовке `x-telegram-webapp-init-data`, без `token` в query/body.
+  - `cpvdemo/public/webapp.html`: подключён скрипт Telegram WebApp SDK.
+  - `product-flow.md`: добавлен раздел `Авторизация WebApp (безопасность)`.
+
+### 2026-02-25T10:55:00+03:00
+- Запрос пользователя: в WebApp добавить переключатели списка (`Планируемые/Успешные/Несостоявшиеся/Все`) и паузу с выбором срока.
+- Что сделано:
+  - `cpvdemo/public/webapp.html`: ленты сведены в один блок с фильтрами; добавлена кнопка `⏸ Пауза ▾` и меню длительностей (1, 2, 7, 14, 30 дней).
+  - `cpvdemo/public/webapp.js`: добавлена клиентская фильтрация списка и логика выбора срока паузы; кнопка `Возобновить` показывается только при активной паузе.
+  - `cpvdemo/server.js`: `/api/webapp/pause` расширен — поддерживает `action=pause` + `durationDays` (whitelist сроков), при этом `pause24h` оставлен совместимым.
+  - `cpvdemo/public/proto.css`: добавлены стили блока фильтров/меню паузы.
+
+### 2026-02-25T11:05:00+03:00
+- Запрос пользователя: добавить выбор канала в WebApp, но показывать селектор только если каналов 2+.
+- Что сделано:
+  - `cpvdemo/public/webapp.html` + `cpvdemo/public/webapp.js`: добавлен селектор каналов, который скрыт при одном канале.
+  - `cpvdemo/server.js`: `GET /api/webapp/state` теперь поддерживает `channelId` и возвращает `channels[] + selectedChannelId`.
+  - `cpvdemo/server.js`: `POST /api/webapp/pause` принимает `channelId`, пауза/резюм применяются к выбранному каналу.
+  - В WebApp списки офферов и статус паузы теперь показываются в разрезе выбранного канала.

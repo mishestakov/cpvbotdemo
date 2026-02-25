@@ -9,7 +9,7 @@ let pollTimer = null;
 let lastStatusText = "";
 
 const STATUS_OPEN_BOT =
-  "Откройте Telegram, нажмите Start и вернитесь в эту вкладку.";
+  "Откройте Telegram, нажмите Start (если кнопки нет — отправьте /start вручную) и вернитесь в эту вкладку.";
 
 function setStatus(text) {
   const nextText = String(text || "");
@@ -49,7 +49,7 @@ function startPolling() {
         return;
       }
       if (row.status === "awaiting_channel") {
-        setStatus("Авторизация успешна. Вернитесь в бота и выберите канал через кнопку \"Выбрать канал\".");
+        setStatus("Авторизация успешна. Вернитесь в бота и выберите канал через кнопку «Выбрать канал». Если кнопки нет — отправьте /start.");
         return;
       }
       if (row.status === "connected") {

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <title>CPV Demo - Кабинет блогера</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="./proto.css" />
+  </head>
+  <body>
+    <main class="pp-webapp">
+      <section class="card pp-waCard">
+        <h1 class="pp-webappTitle">Кабинет блогера</h1>
+        <div class="pp-waSelectWrap" id="waChannelSelectWrap" hidden>
+          <label class="muted pp-waLabel" for="waChannelSelect">Канал</label>
+          <select class="control select" id="waChannelSelect"></select>
+        </div>
+        <p class="pp-waChannel" id="waChannel">Загрузка...</p>
+        <div class="pp-webappPauseRow">
+          <div class="pp-webappPauseControls">
+            <button class="btn btn-accent" id="waPauseDefaultBtn" type="button">⏸ Пауза 24 часа</button>
+            <button class="btn btn-outline" id="waPauseOtherBtn" type="button">Другой срок</button>
+            <button class="btn btn-gray" id="waResumeBtn" type="button" hidden>▶️ Возобновить</button>
+          </div>
+          <p class="muted pp-waHint" id="waPauseHint"></p>
+        </div>
+      </section>
+
+      <section class="card pp-waCard">
+        <h2>Размещения</h2>
+        <div class="tabs pp-waTabs">
+          <button class="tab active" id="waFilterUpcoming" type="button">Планируемые</button>
+          <button class="tab" id="waFilterPublished" type="button">Успешные</button>
+          <button class="tab" id="waFilterFailed" type="button">Несостоявшиеся</button>
+          <button class="tab" id="waFilterAll" type="button">Все</button>
+        </div>
+        <div id="waOffers"></div>
+      </section>
+    </main>
+
+    <div class="pp-sheet" id="waPauseSheet" hidden>
+      <div class="pp-sheetBackdrop" data-close="1"></div>
+      <div class="pp-sheetCard">
+        <h3>Выберите срок паузы</h3>
+        <div class="pp-sheetActions">
+          <button class="btn btn-outline" type="button" data-days="1">1 день</button>
+          <button class="btn btn-outline" type="button" data-days="2">2 дня</button>
+          <button class="btn btn-outline" type="button" data-days="7">1 неделя</button>
+          <button class="btn btn-outline" type="button" data-days="14">2 недели</button>
+          <button class="btn btn-outline" type="button" data-days="30">1 месяц</button>
+          <button class="btn btn-gray" type="button" data-close="1">Отмена</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="./webapp.js"></script>
+  </body>
+</html>
