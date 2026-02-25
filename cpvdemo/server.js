@@ -3,8 +3,8 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
-const crypto = require("node:crypto");
 const dns = require("node:dns");
+const crypto = require("node:crypto");
 const dotenv = require("dotenv");
 const BT = require("./bot-texts");
 
@@ -19,7 +19,6 @@ const DB_PATH = path.join(DATA_DIR, "db.json");
 
 const BOT_TOKEN = String(process.env.BOT_TOKEN || "").trim();
 const WEBHOOK_BASE_URL = String(process.env.WEBHOOK_BASE_URL || "").trim().replace(/\/+$/, "");
-const PUBLIC_BASE_URL = String(process.env.PUBLIC_BASE_URL || WEBHOOK_BASE_URL || "").trim().replace(/\/+$/, "");
 const WEBHOOK_SECRET_TOKEN = String(process.env.WEBHOOK_SECRET_TOKEN || "").trim();
 const WEBHOOK_PATH = "/api/telegram/webhook";
 const WEBHOOK_DROP_PENDING_UPDATES = String(process.env.WEBHOOK_DROP_PENDING_UPDATES || "true").trim().toLowerCase() !== "false";
@@ -28,7 +27,6 @@ const WEBAPP_AUTH_TTL_SEC = Math.max(60, Number(process.env.WEBAPP_AUTH_TTL_SEC 
 
 const BOT_API_TIMEOUT_MS = parseMsEnv("BOT_API_TIMEOUT_MS", 20_000, 3_000);
 const BOT_CONNECT_RETRY_INTERVAL_MS = parseMsEnv("BOT_CONNECT_RETRY_INTERVAL_MS", 5_000, 1_000);
-const AUTH_SESSION_TTL_MS = parseMsEnv("AUTH_SESSION_TTL_MS", 30 * 60 * 1000, 60_000);
 const PRECHECK_DECISION_MS = parseMsEnv("PRECHECK_DECISION_MS", 60_000, 10_000);
 const OFFER_DEADLINE_CHECK_INTERVAL_MS = parseMsEnv("OFFER_DEADLINE_CHECK_INTERVAL_MS", 5_000, 1_000);
 const AUTO_PAUSE_DURATION_MS = parseMsEnv("AUTO_PAUSE_DURATION_MS", 24 * 60 * 60 * 1000, 1_000);
@@ -143,6 +141,12 @@ function isOfferAwaitingDecision(offer) {
   return status === "pending_precheck" || status === "pending_approval";
 }
 
+function canRescheduleOffer(offer, nowTs = Date.now()) {
+  if (!isOfferActive(offer)) return false;
+  const scheduledAt = Number(offer?.scheduledAt || 0);
+  return Number.isFinite(scheduledAt) && scheduledAt > nowTs;
+}
+
 function isChannelAutoPaused(channel, now = Date.now()) {
   const untilAt = Number(channel?.autoPausedUntilAt || 0);
   return Number.isFinite(untilAt) && untilAt > now;
@@ -166,8 +170,7 @@ function createEmptyDb() {
     },
     bloggers: {},
     channels: {},
-    offers: {},
-    authSessions: {}
+    offers: {}
   };
 }
 
@@ -187,6 +190,13 @@ function normalizeScheduleSlots(input) {
   return out.sort((a, b) => a.day - b.day || a.hour - b.hour);
 }
 
+function normalizeTimestampMs(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return Number(fallback);
+  if (n > 0 && n < 1_000_000_000_000) return Math.round(n * 1000);
+  return Math.round(n);
+}
+
 function normalizeDb(raw) {
   const db = createEmptyDb();
   if (!raw || typeof raw !== "object") return db;
@@ -197,7 +207,6 @@ function normalizeDb(raw) {
   db.bloggers = raw.bloggers && typeof raw.bloggers === "object" ? raw.bloggers : {};
   db.channels = raw.channels && typeof raw.channels === "object" ? raw.channels : {};
   db.offers = raw.offers && typeof raw.offers === "object" ? raw.offers : {};
-  db.authSessions = raw.authSessions && typeof raw.authSessions === "object" ? raw.authSessions : {};
 
   for (const channel of Object.values(db.channels)) {
     channel.postingMode = normalizeMode(channel.postingMode);
@@ -224,13 +233,10 @@ function normalizeDb(raw) {
     offer.bloggerDeclineReason = offer.bloggerDeclineReason ? String(offer.bloggerDeclineReason) : null;
     offer.eridTag = String(offer.eridTag || `demo-${offer.id}`);
     offer.adMessageId = Number.isInteger(Number(offer.adMessageId)) ? Number(offer.adMessageId) : null;
-    const fallbackAt = Number.isFinite(Number(offer.scheduledAt)) ? Number(offer.scheduledAt) : Date.now();
-    offer.availabilityFromAt = Number.isFinite(Number(offer.availabilityFromAt))
-      ? Number(offer.availabilityFromAt)
-      : fallbackAt;
-    offer.availabilityToAt = Number.isFinite(Number(offer.availabilityToAt))
-      ? Number(offer.availabilityToAt)
-      : fallbackAt;
+    const fallbackAt = normalizeTimestampMs(offer.scheduledAt, Date.now());
+    offer.scheduledAt = fallbackAt;
+    offer.availabilityFromAt = normalizeTimestampMs(offer.availabilityFromAt, fallbackAt);
+    offer.availabilityToAt = normalizeTimestampMs(offer.availabilityToAt, fallbackAt);
     if (offer.availabilityToAt < offer.availabilityFromAt) {
       offer.availabilityToAt = offer.availabilityFromAt;
     }
@@ -293,26 +299,6 @@ async function readJsonBody(req) {
   } catch {
     return {};
   }
-}
-
-function parseStartPayload(text) {
-  const value = String(text || "").trim();
-  const match = value.match(/^\/start(?:@\w+)?(?:\s+(.+))?$/i);
-  if (!match) return "";
-  return String(match[1] || "").trim();
-}
-
-function markExpiredSessions() {
-  const now = Date.now();
-  let changed = false;
-  for (const row of Object.values(db.authSessions)) {
-    if (row.status === "connected") continue;
-    if (now <= Number(row.expiresAt || 0)) continue;
-    row.status = "expired";
-    row.error = row.error || "Session expired";
-    changed = true;
-  }
-  if (changed) saveDb(db);
 }
 
 function dayOfWeekMonFirst(date) {
@@ -395,25 +381,64 @@ function getChannelForBlogger(bloggerId) {
   return channels[0] || null;
 }
 
-function getSessionByToken(token) {
-  return db.authSessions[String(token || "").trim()] || null;
+async function clearBotCommandMenus() {
+  const scopes = [
+    { type: "default" },
+    { type: "all_private_chats" },
+    { type: "all_group_chats" },
+    { type: "all_chat_administrators" }
+  ];
+  for (const scope of scopes) {
+    try {
+      await tgApiWithRetry("deleteMyCommands", { scope });
+    } catch (err) {
+      console.warn(`deleteMyCommands failed for scope=${scope.type}: ${formatError(err)}`);
+    }
+  }
+  try {
+    await tgApiWithRetry("deleteChatMenuButton", {});
+  } catch (err) {
+    console.warn(`deleteChatMenuButton failed: ${formatError(err)}`);
+  }
 }
 
 function buildWebAppUrl() {
-  if (!PUBLIC_BASE_URL) return "";
-  return `${PUBLIC_BASE_URL}/cpvdemo/webapp`;
+  if (!WEBHOOK_BASE_URL) return "";
+  return `${WEBHOOK_BASE_URL}/cpvdemo/webapp`;
 }
 
-function buildWebAppKeyboard() {
+async function setDefaultWebAppMenuButton() {
   const url = buildWebAppUrl();
-  if (!url) return null;
-  return {
-    keyboard: [[{
-      text: "Открыть кабинет",
-      web_app: { url }
-    }]],
-    resize_keyboard: true
-  };
+  if (!url) return;
+  try {
+    await tgApiWithRetry("setChatMenuButton", {
+      menu_button: {
+        type: "web_app",
+        text: "Кабинет",
+        web_app: { url }
+      }
+    });
+  } catch (err) {
+    console.warn(`setChatMenuButton failed: ${formatError(err)}`);
+  }
+}
+
+async function setUserWebAppMenuButton(chatId) {
+  const url = buildWebAppUrl();
+  const targetChatId = Number(chatId || 0);
+  if (!url || !targetChatId) return;
+  try {
+    await tgApiWithRetry("setChatMenuButton", {
+      chat_id: targetChatId,
+      menu_button: {
+        type: "web_app",
+        text: "Кабинет",
+        web_app: { url }
+      }
+    });
+  } catch {
+    // ignore
+  }
 }
 
 function parseWebAppInitDataFromReq(req, url, body) {
@@ -472,83 +497,10 @@ function ensureWebAppContextByInitData(initDataRaw) {
   return { ok: true, blogger, channel };
 }
 
-async function clearBotCommandMenus() {
-  const scopes = [
-    { type: "default" },
-    { type: "all_private_chats" },
-    { type: "all_group_chats" },
-    { type: "all_chat_administrators" }
-  ];
-  for (const scope of scopes) {
-    try {
-      await tgApiWithRetry("deleteMyCommands", { scope });
-    } catch (err) {
-      console.warn(`deleteMyCommands failed for scope=${scope.type}: ${formatError(err)}`);
-    }
-  }
-}
-
-async function setDefaultWebAppMenuButton() {
-  const url = buildWebAppUrl();
-  if (!url) return;
-  try {
-    await tgApiWithRetry("setChatMenuButton", {
-      menu_button: {
-        type: "web_app",
-        text: "Кабинет",
-        web_app: { url }
-      }
-    });
-  } catch (err) {
-    console.warn(`setChatMenuButton default failed: ${formatError(err)}`);
-  }
-}
-
-function getLatestAwaitingSessionForUser(userId) {
-  const target = String(userId || "").trim();
-  if (!target) return null;
-
-  let latest = null;
-  for (const row of Object.values(db.authSessions)) {
-    if (row?.status !== "awaiting_channel") continue;
-    const tgUserId = String(row?.tgUserId || "").trim();
-    const bloggerId = String(row?.bloggerId || "").trim();
-    if (tgUserId !== target && bloggerId !== target) continue;
-    if (!latest || Number(row.createdAt || 0) > Number(latest.createdAt || 0)) {
-      latest = row;
-    }
-  }
-  return latest;
-}
-
-function ensureConnectedContext(token) {
-  const session = getSessionByToken(token);
-  if (!session || session.status !== "connected") return null;
-  const blogger = getBloggerById(session.bloggerId);
-  if (!blogger) return null;
-  const channel = getChannelForBlogger(blogger.id);
-  return { session, blogger, channel };
-}
-
-function toChannelDto(channel, blogger) {
-  return {
-    key: channel?.username ? `@${channel.username}` : `channel_${channel?.id || "new"}`,
-    title: channel?.title || "Канал не выбран",
-    username: channel?.username || "",
-    status: channel?.botConnected ? "ready" : "bot_not_connected",
-    postingMode: normalizeMode(channel?.postingMode || "auto_with_precheck"),
-    weeklyPostLimit: Number(channel?.weeklyPostLimit || 21),
-    scheduleSlots: channel?.scheduleSlots?.length ? channel.scheduleSlots : buildDefaultScheduleSlots(),
-    blogger: {
-      tgUsername: blogger?.tgUsername || null
-    },
-    botConnected: Boolean(channel?.botConnected),
-    botMemberStatus: channel?.botMemberStatus || "unknown"
-  };
-}
-
 function toOfferDto(offer) {
   const status = String(offer?.status || "");
+  const canDecide = isOfferAwaitingDecision(offer);
+  const canPickTime = canRescheduleOffer(offer);
   const publicationState =
     status === "rewarded"
       ? "published"
@@ -576,9 +528,55 @@ function toOfferDto(offer) {
     text: offer.textRaw,
     channelId: offer.channelId,
     declineReason: offer.bloggerDeclineReason || null,
+    canApprove: canDecide,
+    canDecline: canDecide,
+    canPickTime,
+    canCancelScheduled: String(status) === "scheduled",
     publicationState,
     publicationStateTitle: publicationState === "published" ? "Опубликовано" : publicationState === "not_published" ? "Не опубликовано" : null
   };
+}
+
+function getWebAppOfferForBlogger(bloggerId, offerId) {
+  const offer = db.offers[String(offerId)];
+  if (!offer) return null;
+  if (String(offer.bloggerId) !== String(bloggerId || "")) return null;
+  return offer;
+}
+
+function buildWebAppOfferPages(offer) {
+  return buildOfferDatePages(offer).slice(0, 14).map((page) => ({
+    dateKey: page.dateKey,
+    dateLabel: page.dateLabel,
+    slots: (Array.isArray(page.slots) ? page.slots : []).slice(0, 24).map((slot) => ({
+      ts: slot.ts,
+      timeLabel: slot.timeLabel
+    }))
+  })).filter((page) => page.slots.length > 0);
+}
+
+function canWebAppApprove(offer) {
+  const status = String(offer?.status || "");
+  return status === "pending_precheck" || status === "pending_approval";
+}
+
+function canWebAppDecline(offer) {
+  return isOfferAwaitingDecision(offer);
+}
+
+function canWebAppCancelScheduled(offer) {
+  return String(offer?.status || "") === "scheduled";
+}
+
+function canUseDateTimeInOfferRange(offer, ts) {
+  if (!Number.isFinite(ts)) return false;
+  if (ts <= Date.now() + 30_000) return false;
+  const minRaw = Number(offer?.availabilityFromAt);
+  const maxRaw = Number(offer?.availabilityToAt);
+  if (Number.isFinite(minRaw) && ts < minRaw) return false;
+  if (Number.isFinite(maxRaw) && ts > maxRaw) return false;
+  const reserved = getReservedSlots(offer.id, offer.bloggerId);
+  return !reserved.has(ts);
 }
 
 function listPlannedOffersForBlogger(bloggerId) {
@@ -664,25 +662,10 @@ function listConnectedChannelsForAdvertiser() {
     .sort((a, b) => Number(b?.blogger?.connectedAt || 0) - Number(a?.blogger?.connectedAt || 0));
 }
 
-function stateSnapshotForToken(token) {
-  const ctx = ensureConnectedContext(token);
-  return {
-    bot: {
-      enabled: botState.enabled,
-      username: botState.username,
-      lastError: botState.lastError,
-      delivery: botState.delivery,
-      webhookUrl: botState.webhookUrl
-    },
-    channels: ctx ? [toChannelDto(ctx.channel, ctx.blogger)] : [],
-    plannedPosts: ctx ? listPlannedOffersForBlogger(ctx.blogger.id) : [],
-    archivePosts: ctx ? listArchiveOffersForBlogger(ctx.blogger.id) : []
-  };
-}
-
 function webAppSnapshotForBlogger(blogger, selectedChannelId) {
   const channels = listChannelsForBlogger(blogger.id);
   if (!channels.length) return null;
+
   const selectedChannel = selectedChannelId
     ? channels.find((item) => String(item.id) === String(selectedChannelId))
     : null;
@@ -695,15 +678,9 @@ function webAppSnapshotForBlogger(blogger, selectedChannelId) {
   const archive = listArchiveOffersForBlogger(blogger.id).filter(
     (item) => String(item.channelId) === String(channel.id)
   );
-  const published = archive.filter((item) => item.publicationState === "published");
-  const failed = archive.filter((item) => item.publicationState === "not_published");
 
   return {
     ok: true,
-    blogger: {
-      id: blogger.id,
-      tgUsername: blogger.tgUsername || null
-    },
     channels: channels.map((item) => ({
       id: item.id,
       title: item.title || "",
@@ -713,7 +690,14 @@ function webAppSnapshotForBlogger(blogger, selectedChannelId) {
       pauseUntilText: isChannelAutoPaused(item) ? formatDateTimeHumanRu(item.autoPausedUntilAt) : null
     })),
     selectedChannelId: channel.id,
-    channel: toChannelDto(channel, blogger),
+    channel: {
+      id: channel.id,
+      title: channel.title || "",
+      username: channel.username || "",
+      weeklyPostLimit: Number(channel.weeklyPostLimit || 21),
+      scheduleSlots: Array.isArray(channel.scheduleSlots) ? channel.scheduleSlots : [],
+      scheduleSlotsCount: Array.isArray(channel.scheduleSlots) ? channel.scheduleSlots.length : 0
+    },
     pause: {
       supported: modeSupportsPause(channel?.postingMode),
       active: isChannelAutoPaused(channel),
@@ -722,8 +706,8 @@ function webAppSnapshotForBlogger(blogger, selectedChannelId) {
     },
     offers: {
       upcoming,
-      published,
-      failed
+      published: archive.filter((item) => item.publicationState === "published"),
+      failed: archive.filter((item) => item.publicationState === "not_published")
     }
   };
 }
@@ -787,14 +771,13 @@ function adminSnapshot() {
 
 function serveStatic(req, res, url) {
   let pathname = url.pathname;
-  if (pathname === "/") pathname = "/auth.html";
-  if (pathname === "/cpvdemo" || pathname === "/cpvdemo/") pathname = "/index.html";
-  if (pathname === "/cpvdemo/auth" || pathname === "/cpvdemo/auth/") pathname = "/auth.html";
+  if (pathname === "/") pathname = "/advertiser.html";
+  if (pathname === "/cpvdemo" || pathname === "/cpvdemo/") pathname = "/advertiser.html";
+  if (pathname === "/cpvdemo/auth" || pathname === "/cpvdemo/auth/") pathname = "/advertiser.html";
+  if (pathname === "/cpvdemo/webapp" || pathname === "/cpvdemo/webapp/") pathname = "/webapp.html";
   if (pathname === "/cpvdemo/advertiser" || pathname === "/cpvdemo/advertiser/") pathname = "/advertiser.html";
   if (pathname === "/cpvdemo/admin" || pathname === "/cpvdemo/admin/") pathname = "/admin.html";
-  if (pathname === "/cpvdemo/webapp" || pathname === "/cpvdemo/webapp/") pathname = "/webapp.html";
   if (pathname.startsWith("/cpvdemo/")) pathname = pathname.slice("/cpvdemo".length);
-  if (pathname === "/auth" || pathname === "/auth/") pathname = "/auth.html";
 
   const fullPath = path.join(PUBLIC_DIR, pathname);
   if (!fullPath.startsWith(PUBLIC_DIR)) {
@@ -977,53 +960,6 @@ function removeKeyboardMarkup() {
   return { remove_keyboard: true };
 }
 
-function markSessionsAwaitingChannelForBlogger(bloggerId) {
-  let changed = false;
-  const now = Date.now();
-  for (const row of Object.values(db.authSessions)) {
-    if (String(row?.bloggerId || "") !== String(bloggerId || "")) continue;
-    if (row.status === "expired") continue;
-    if (row.status === "connected") continue;
-    row.status = "awaiting_channel";
-    row.connectedAt = now;
-    row.error = null;
-    changed = true;
-  }
-  if (changed) saveDb(db);
-}
-
-function markSessionsConnectedForBlogger(bloggerId) {
-  let changed = false;
-  const now = Date.now();
-  for (const row of Object.values(db.authSessions)) {
-    if (String(row?.bloggerId || "") !== String(bloggerId || "")) continue;
-    if (row.status === "expired") continue;
-    row.status = "connected";
-    row.connectedAt = now;
-    row.error = null;
-    changed = true;
-  }
-  if (changed) saveDb(db);
-}
-
-function createAwaitingChannelSession(blogger, tgUserId, tgUsername) {
-  const token = crypto.randomBytes(8).toString("hex");
-  const now = Date.now();
-  db.authSessions[token] = {
-    token,
-    createdAt: now,
-    expiresAt: now + AUTH_SESSION_TTL_MS,
-    status: "awaiting_channel",
-    tgUserId: tgUserId || null,
-    tgUsername: tgUsername || null,
-    bloggerId: blogger?.id || null,
-    connectedAt: now,
-    error: null
-  };
-  saveDb(db);
-  return token;
-}
-
 async function hydrateChannelFromTelegram(channel) {
   if (!channel?.chatId) return;
 
@@ -1126,13 +1062,6 @@ function channelLabel(channel) {
   return BT.channel.byId(channel.id);
 }
 
-function channelModeStatusLine(channel) {
-  const pausePart = modeSupportsPause(channel?.postingMode) && isChannelAutoPaused(channel)
-    ? BT.channel.pausedUntil(formatDateTimeHumanRu(channel.autoPausedUntilAt))
-    : "";
-  return `• ${channelLabel(channel)} — ${modeButtonTitle(channel?.postingMode)}${pausePart}`;
-}
-
 function channelPauseStatusLine(channel) {
   if (!modeSupportsPause(channel?.postingMode)) {
     return BT.channel.pauseNotAvailable(modeButtonTitle(channel?.postingMode), channelLabel(channel));
@@ -1165,36 +1094,6 @@ function buildPauseKeyboard(channel, withBack) {
     rows.push([{ text: BT.buttons.backChannels, callback_data: "pause:list" }]);
   }
   return rows.length ? { inline_keyboard: rows } : null;
-}
-
-function buildModeKeyboardForChannel(channel, withBack) {
-  const rows = [];
-  const currentMode = normalizeMode(channel?.postingMode || "auto_with_precheck");
-  for (const mode of POSTING_MODES) {
-    const mark = currentMode === mode ? "✅ " : "";
-    rows.push([{ text: `${mark}${modeButtonTitle(mode)}`, callback_data: `mode:set:${channel.id}:${mode}` }]);
-  }
-  if (withBack) {
-    rows.push([{ text: BT.buttons.backChannels, callback_data: "mode:list" }]);
-  }
-  return { inline_keyboard: rows };
-}
-
-function buildModeTextForChannel(channel, channels, withStatuses) {
-  const lines = [];
-  lines.push(BT.mode.panel.channelForPanel(channelLabel(channel)));
-  lines.push(BT.mode.panel.currentMode(modeTitle(channel?.postingMode || "auto_with_precheck")));
-  if (modeSupportsPause(channel?.postingMode) && isChannelAutoPaused(channel)) {
-    lines.push(BT.mode.panel.pauseActiveUntil(formatDateTimeHumanRu(channel.autoPausedUntilAt)));
-  }
-  lines.push("");
-  lines.push(BT.mode.panel.panelText);
-  if (withStatuses) {
-    lines.push("");
-    lines.push(BT.chooser.statusesTitle);
-    for (const item of channels) lines.push(channelModeStatusLine(item));
-  }
-  return lines.join("\n");
 }
 
 function getReservedSlots(exceptOfferId, bloggerId) {
@@ -1291,7 +1190,7 @@ function clamp(num, min, max) {
 
 function getOfferUiState(offer) {
   const raw = String(offer?.uiState || "main");
-  if (!isOfferAwaitingDecision(offer)) return "main";
+  if (!canRescheduleOffer(offer) && !isOfferAwaitingDecision(offer)) return "main";
   if (raw === "pick_time") return raw;
   return "main";
 }
@@ -1355,6 +1254,9 @@ function buildOfferKeyboard(offer, pageFromCallback) {
     rows.push([{ text: BT.buttons.pickTime, callback_data: `of:tm:${offer.id}`, style: "primary" }]);
     rows.push([{ text: BT.buttons.decline, callback_data: `of:dr:${offer.id}`, style: "danger" }]);
   } else if (offer.status === "scheduled") {
+    if (canRescheduleOffer(offer)) {
+      rows.push([{ text: BT.buttons.pickTime, callback_data: `of:tm:${offer.id}`, style: "primary" }]);
+    }
     rows.push([{ text: BT.buttons.cancelScheduled, callback_data: `of:bc:${offer.id}` }]);
   }
 
@@ -1650,6 +1552,10 @@ function canUseSlot(offer, slotTs) {
 
 async function rescheduleOffer(offer, slotTs) {
   if (!Number.isFinite(slotTs) || !canUseSlot(offer, slotTs)) return false;
+  return applyRescheduledTime(offer, slotTs);
+}
+
+async function applyRescheduledTime(offer, slotTs) {
   offer.scheduledAt = slotTs;
   if (offer.status === "pending_precheck") {
     offer.decisionDeadlineAt = Math.min(slotTs, Date.now() + PRECHECK_DECISION_MS);
@@ -1682,7 +1588,7 @@ async function processOfferDeadlines() {
     const now = Date.now();
     for (const offer of listOffers()) {
       if (offer.status === "pending_precheck" && now >= Number(offer.decisionDeadlineAt || 0)) {
-        await approveOffer(offer, BT.offer.flow.autoApproved(offer.id));
+        await approveOffer(offer);
         continue;
       }
 
@@ -1772,35 +1678,8 @@ async function processAutoPauseExpirations() {
 
 async function handleStartMessage(message) {
   const chatId = Number(message?.chat?.id || 0);
-  const payload = parseStartPayload(message?.text);
-
-  if (!payload) {
-    const blogger = getBloggerById(String(message?.from?.id || ""));
-    if (blogger) {
-      createAwaitingChannelSession(blogger, message?.from?.id || null, message?.from?.username || null);
-      markSessionsAwaitingChannelForBlogger(blogger.id);
-      const sent = await sendBotMessage(
-        chatId,
-        BT.start.successChooseChannel,
-        buildChannelRequestKeyboard()
-      );
-      if (!sent) await sendBotMessage(chatId, BT.start.chooseChannelButtonFailed);
-      return;
-    }
-    await sendBotMessage(chatId, BT.start.needAuthLink);
-    return;
-  }
-
-  markExpiredSessions();
-  const session = getSessionByToken(payload);
-  if (!session) {
-    await sendBotMessage(chatId, BT.start.linkNotFound);
-    return;
-  }
-  if (session.status === "expired") {
-    await sendBotMessage(chatId, BT.start.sessionExpired);
-    return;
-  }
+  if (!chatId) return;
+  await setUserWebAppMenuButton(chatId);
 
   const tgUserId = message?.from?.id || null;
   const tgUsername = message?.from?.username || null;
@@ -1809,17 +1688,6 @@ async function handleStartMessage(message) {
     await sendBotMessage(chatId, BT.start.userSaveFailed);
     return;
   }
-
-  session.status = "awaiting_channel";
-  session.tgUserId = tgUserId;
-  session.tgUsername = tgUsername;
-  session.connectedAt = Date.now();
-  session.error = null;
-  session.bloggerId = blogger.id;
-  db.authSessions[payload] = session;
-  saveDb(db);
-
-  markSessionsAwaitingChannelForBlogger(blogger.id);
 
   const sent = await sendBotMessage(
     chatId,
@@ -1840,26 +1708,15 @@ async function handleChatSharedMessage(message) {
   const chatShared = message?.chat_shared;
   const channelChatId = Number(chatShared?.chat_id || 0);
   const fromId = String(message?.from?.id || "").trim();
-  const messageTs = Number(message?.date || 0) * 1000;
 
   if (!fromId || !channelChatId) {
     await sendBotMessage(privateChatId, BT.channelSelection.processFailed);
     return;
   }
 
-  const awaitingSession = getLatestAwaitingSessionForUser(fromId);
-  if (!awaitingSession) {
-    await sendBotMessage(privateChatId, BT.channelSelection.sessionNotActive);
-    return;
-  }
-  if (Number.isFinite(messageTs) && messageTs > 0 && messageTs + 2000 < Number(awaitingSession.createdAt || 0)) {
-    await sendBotMessage(privateChatId, BT.channelSelection.staleSelection);
-    return;
-  }
-
   const blogger = getBloggerById(fromId);
   if (!blogger) {
-    await sendBotMessage(privateChatId, BT.channelSelection.needStartFromWeb);
+    await sendBotMessage(privateChatId, BT.start.mustAuthAndChooseChannel);
     return;
   }
 
@@ -1869,8 +1726,6 @@ async function handleChatSharedMessage(message) {
     chatShared?.title,
     chatShared?.username
   );
-
-  markSessionsConnectedForBlogger(blogger.id);
 
   await hydrateChannelFromTelegram(channel);
   db.channels[channel.id] = channel;
@@ -1882,8 +1737,6 @@ async function handleChatSharedMessage(message) {
       BT.channelSelection.addBotAndReturn(botState.username),
       removeKeyboardMarkup()
     );
-    const keyboard = buildWebAppKeyboard(blogger.id);
-    if (keyboard) await sendBotMessage(privateChatId, "Кабинет доступен по кнопке ниже.", keyboard);
     return;
   } else {
     await sendBotMessage(
@@ -1891,49 +1744,8 @@ async function handleChatSharedMessage(message) {
       BT.channelSelection.readyAndConnected,
       removeKeyboardMarkup()
     );
-    const keyboard = buildWebAppKeyboard(blogger.id);
-    if (keyboard) await sendBotMessage(privateChatId, "Кабинет доступен по кнопке ниже.", keyboard);
     return;
   }
-}
-
-function buildModeChooserPayload(blogger, selectedChannelId) {
-  const channels = listChannelsForBlogger(blogger?.id);
-  if (!channels.length) {
-    return {
-      text: BT.start.mustChooseChannelFirst,
-      keyboard: null,
-      parseMode: null
-    };
-  }
-
-  const multi = channels.length > 1;
-  if (!selectedChannelId && multi) {
-    const lines = [BT.chooser.chooseChannelForMode, "", BT.chooser.statusesTitle];
-    for (const channel of channels) lines.push(channelModeStatusLine(channel));
-    return {
-      text: lines.join("\n"),
-      keyboard: buildChannelPickerKeyboard("mode", channels),
-      parseMode: "HTML"
-    };
-  }
-
-  const selected = selectedChannelId
-    ? channels.find((channel) => String(channel.id) === String(selectedChannelId))
-    : channels[0];
-  if (!selected) {
-    return {
-      text: BT.chooser.channelNotFoundChooseAgain,
-      keyboard: buildChannelPickerKeyboard("mode", channels),
-      parseMode: null
-    };
-  }
-
-  return {
-    text: buildModeTextForChannel(selected, channels, multi),
-    keyboard: buildModeKeyboardForChannel(selected, multi),
-    parseMode: "HTML"
-  };
 }
 
 function buildPauseChooserPayload(blogger, selectedChannelId) {
@@ -1970,8 +1782,8 @@ function buildPauseChooserPayload(blogger, selectedChannelId) {
 
   if (!modeSupportsPause(selected.postingMode)) {
     const lines = [
-      BT.mode.panel.channelForPanel(channelLabel(selected)),
-      BT.callback.modeSet(modeTitle(selected.postingMode)),
+      `Канал: ${channelLabel(selected)}`,
+      `Режим: ${modeTitle(selected.postingMode)}`,
       BT.chooser.pauseModeHint
     ];
     if (multi) {
@@ -1987,7 +1799,7 @@ function buildPauseChooserPayload(blogger, selectedChannelId) {
 
   if (isChannelAutoPaused(selected)) {
     const lines = [
-      BT.mode.panel.channelForPanel(channelLabel(selected)),
+      `Канал: ${channelLabel(selected)}`,
       BT.chooser.pauseActiveLine(formatDateTimeHumanRu(selected.autoPausedUntilAt))
     ];
     if (multi) {
@@ -2002,7 +1814,7 @@ function buildPauseChooserPayload(blogger, selectedChannelId) {
   }
 
   const lines = [
-    BT.mode.panel.channelForPanel(channelLabel(selected)),
+    `Канал: ${channelLabel(selected)}`,
     BT.chooser.pauseActiveGeneric
   ];
   if (multi) {
@@ -2014,100 +1826,6 @@ function buildPauseChooserPayload(blogger, selectedChannelId) {
     keyboard: buildPauseKeyboard(selected, multi),
     parseMode: "HTML"
   };
-}
-
-async function sendModeChooser(chatId, blogger) {
-  if (!blogger) {
-    await sendBotMessage(chatId, BT.start.mustAuthAndChooseChannel);
-    return;
-  }
-  const payload = buildModeChooserPayload(blogger, null);
-  await sendBotMessage(chatId, payload.text, payload.keyboard, {
-    parseMode: payload.parseMode || undefined
-  });
-}
-
-async function handleModeCallback(query, actionData) {
-  const fromId = String(query?.from?.id || "").trim();
-  const blogger = getBloggerById(fromId);
-  if (!blogger) {
-    await answerCallbackQuery(query.id, BT.callback.authFirst);
-    return;
-  }
-
-  const channels = listChannelsForBlogger(blogger.id);
-  if (!channels.length) {
-    await answerCallbackQuery(query.id, BT.callback.channelFirst);
-    return;
-  }
-
-  const chatId = Number(query?.message?.chat?.id || 0);
-  const messageId = Number(query?.message?.message_id || 0);
-  const action = String(actionData || "").trim();
-
-  const renderPanel = async (selectedChannelId) => {
-    const payload = buildModeChooserPayload(blogger, selectedChannelId);
-    if (chatId && messageId) {
-      await editBotMessage(chatId, messageId, payload.text, payload.keyboard, {
-        parseMode: payload.parseMode || undefined
-      });
-      return;
-    }
-    await sendBotMessage(blogger.chatId, payload.text, payload.keyboard, {
-      parseMode: payload.parseMode || undefined
-    });
-  };
-
-  if (action === "list") {
-    await renderPanel(null);
-    await answerCallbackQuery(query.id);
-    return;
-  }
-
-  if (action.startsWith("ch:")) {
-    const channelId = action.split(":")[1];
-    await renderPanel(channelId || null);
-    await answerCallbackQuery(query.id);
-    return;
-  }
-
-  if (POSTING_MODES.includes(action)) {
-    const channel = channels.find((item) => String(item.id) === String(blogger.channelId)) || channels[0];
-    channel.postingMode = normalizeMode(action);
-    if (!modeSupportsPause(channel.postingMode)) {
-      channel.autoPausedUntilAt = null;
-      channel.autoPauseMessageId = null;
-    }
-    channel.updatedAt = Date.now();
-    db.channels[channel.id] = channel;
-    saveDb(db);
-    await answerCallbackQuery(query.id, BT.callback.modeSet(modeTitle(channel.postingMode)));
-    await renderPanel(channel.id);
-    return;
-  }
-
-  if (action.startsWith("set:")) {
-    const [, channelId, modeRaw] = action.split(":");
-    const channel = channels.find((item) => String(item.id) === String(channelId || ""));
-    if (!channel) {
-      await answerCallbackQuery(query.id, BT.callback.channelNotFound);
-      return;
-    }
-    const mode = normalizeMode(modeRaw);
-    channel.postingMode = mode;
-    if (!modeSupportsPause(channel.postingMode)) {
-      channel.autoPausedUntilAt = null;
-      channel.autoPauseMessageId = null;
-    }
-    channel.updatedAt = Date.now();
-    db.channels[channel.id] = channel;
-    saveDb(db);
-    await answerCallbackQuery(query.id, BT.callback.channelModeSet(channelLabel(channel), modeTitle(channel.postingMode)));
-    await renderPanel(channel.id);
-    return;
-  }
-
-  await answerCallbackQuery(query.id, BT.callback.unknownAction);
 }
 
 async function sendPauseChooser(chatId, blogger) {
@@ -2259,6 +1977,10 @@ async function handleOfferCallback(query, parsed) {
   }
 
   if (parsed.action === "ps") {
+    if (!canRescheduleOffer(offer)) {
+      await answerCallbackQuery(query.id, offerProcessedCallbackText(offer));
+      return;
+    }
     const slotTs = Number(parsed.arg || 0);
     const ok = await rescheduleOffer(offer, slotTs);
     await answerCallbackQuery(query.id, ok ? BT.callback.slotUpdated : BT.callback.slotUnavailable);
@@ -2266,7 +1988,7 @@ async function handleOfferCallback(query, parsed) {
   }
 
   if (parsed.action === "tm") {
-    if (!isOfferAwaitingDecision(offer)) {
+    if (!canRescheduleOffer(offer)) {
       await answerCallbackQuery(query.id, offerProcessedCallbackText(offer));
       return;
     }
@@ -2345,8 +2067,7 @@ async function processTelegramUpdate(update) {
 
   if (/^\/mode(?:@\w+)?(?:\s+.*)?$/i.test(text)) {
     const chatId = Number(message?.chat?.id || 0);
-    const blogger = getBloggerById(String(message?.from?.id || ""));
-    await sendModeChooser(chatId, blogger);
+    await sendBotMessage(chatId, "Режим публикации теперь настраивается только в админке.");
     return;
   }
 
@@ -2361,7 +2082,7 @@ async function processTelegramUpdate(update) {
     const query = update.callback_query;
     const data = String(query?.data || "");
     if (data.startsWith("mode:")) {
-      await handleModeCallback(query, data.slice(5));
+      await answerCallbackQuery(query.id, "Режим меняется только через админку.");
       return;
     }
     if (data.startsWith("pause:")) {
@@ -2415,7 +2136,6 @@ async function startBot() {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  markExpiredSessions();
 
   if (url.pathname === WEBHOOK_PATH && req.method === "POST") {
     const got = String(req.headers["x-telegram-bot-api-secret-token"] || "");
@@ -2432,9 +2152,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (url.pathname === "/api/state" && req.method === "GET") {
-    const token = String(url.searchParams.get("token") || "").trim();
-    sendJson(res, 200, stateSnapshotForToken(token));
+  if (url.pathname === "/api/advertiser/state" && req.method === "GET") {
+    sendJson(res, 200, advertiserSnapshot());
+    return;
+  }
+
+  if (url.pathname === "/api/admin/state" && req.method === "GET") {
+    sendJson(res, 200, adminSnapshot());
     return;
   }
 
@@ -2455,64 +2179,28 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (url.pathname === "/api/advertiser/state" && req.method === "GET") {
-    sendJson(res, 200, advertiserSnapshot());
-    return;
-  }
-
-  if (url.pathname === "/api/admin/state" && req.method === "GET") {
-    sendJson(res, 200, adminSnapshot());
-    return;
-  }
-
-  if (url.pathname === "/api/auth/session" && req.method === "POST") {
-    if (!botState.enabled || !botState.username) {
-      sendJson(res, 503, { error: botState.lastError || "Bot is not configured" });
+  if (url.pathname === "/api/webapp/offer-pages" && req.method === "GET") {
+    const initData = parseWebAppInitDataFromReq(req, url, null);
+    const ctx = ensureWebAppContextByInitData(initData);
+    if (!ctx.ok) {
+      sendJson(res, ctx.code, { error: ctx.error });
       return;
     }
-
-    const token = crypto.randomBytes(8).toString("hex");
-    db.authSessions[token] = {
-      token,
-      createdAt: Date.now(),
-      expiresAt: Date.now() + AUTH_SESSION_TTL_MS,
-      status: "pending_start",
-      tgUserId: null,
-      tgUsername: null,
-      bloggerId: null,
-      connectedAt: null,
-      error: null
-    };
-    saveDb(db);
-
-    sendJson(res, 200, {
-      ok: true,
-      token,
-      tg: `https://t.me/${botState.username}?start=${encodeURIComponent(token)}`,
-      status: "pending_start",
-      expiresAt: db.authSessions[token].expiresAt
-    });
-    return;
-  }
-
-  if (url.pathname === "/api/auth/session" && req.method === "GET") {
-    const token = String(url.searchParams.get("token") || "").trim();
-    const row = getSessionByToken(token);
-    if (!row) {
-      sendJson(res, 404, { error: "Not found" });
+    const offerId = Number(url.searchParams.get("offerId"));
+    if (!Number.isInteger(offerId)) {
+      sendJson(res, 400, { error: "Invalid offerId" });
       return;
     }
-
-    sendJson(res, 200, {
-      ok: true,
-      token,
-      status: row.status,
-      tgUserId: row.tgUserId,
-      tgUsername: row.tgUsername,
-      error: row.error,
-      expiresAt: row.expiresAt,
-      web: row.status === "connected" ? `/cpvdemo?token=${encodeURIComponent(token)}` : null
-    });
+    const offer = getWebAppOfferForBlogger(ctx.blogger.id, offerId);
+    if (!offer) {
+      sendJson(res, 404, { error: "Offer not found" });
+      return;
+    }
+    if (!canRescheduleOffer(offer)) {
+      sendJson(res, 400, { error: "Offer cannot be rescheduled" });
+      return;
+    }
+    sendJson(res, 200, { ok: true, pages: buildWebAppOfferPages(offer) });
     return;
   }
 
@@ -2592,15 +2280,16 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (url.pathname === "/api/channel/mode" && req.method === "POST") {
+  if (url.pathname === "/api/admin/channel/mode" && req.method === "POST") {
     const body = await readJsonBody(req);
-    const ctx = ensureConnectedContext(body.token);
-    if (!ctx) {
-      sendJson(res, 404, { error: "Not found" });
+    const channelId = String(body.channelId || "").trim();
+    if (!channelId) {
+      sendJson(res, 400, { error: "channelId is required" });
       return;
     }
-    if (!ctx.channel) {
-      sendJson(res, 400, { error: "Channel is not selected yet" });
+    const channel = getChannelById(channelId);
+    if (!channel) {
+      sendJson(res, 404, { error: "Channel not found" });
       return;
     }
 
@@ -2610,50 +2299,16 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    ctx.channel.postingMode = mode;
+    channel.postingMode = mode;
     if (!modeSupportsPause(mode)) {
-      ctx.channel.autoPausedUntilAt = null;
-      ctx.channel.autoPauseMessageId = null;
+      channel.autoPausedUntilAt = null;
+      channel.autoPauseMessageId = null;
     }
-    ctx.channel.updatedAt = Date.now();
-    db.channels[ctx.channel.id] = ctx.channel;
+    channel.updatedAt = Date.now();
+    db.channels[channel.id] = channel;
     saveDb(db);
 
-    sendJson(res, 200, { ok: true, mode });
-    return;
-  }
-
-  if (url.pathname === "/api/channel/settings" && req.method === "POST") {
-    const body = await readJsonBody(req);
-    const ctx = ensureConnectedContext(body.token);
-    if (!ctx) {
-      sendJson(res, 404, { error: "Not found" });
-      return;
-    }
-    if (!ctx.channel) {
-      sendJson(res, 400, { error: "Channel is not selected yet" });
-      return;
-    }
-
-    const weeklyPostLimit = Number(body.weeklyPostLimit);
-    if (!Number.isInteger(weeklyPostLimit) || weeklyPostLimit < 1 || weeklyPostLimit > 28) {
-      sendJson(res, 400, { error: "Invalid weeklyPostLimit" });
-      return;
-    }
-
-    const scheduleSlots = normalizeScheduleSlots(body.scheduleSlots);
-    if (!scheduleSlots.length) {
-      sendJson(res, 400, { error: "Invalid scheduleSlots" });
-      return;
-    }
-
-    ctx.channel.weeklyPostLimit = weeklyPostLimit;
-    ctx.channel.scheduleSlots = scheduleSlots;
-    ctx.channel.updatedAt = Date.now();
-    db.channels[ctx.channel.id] = ctx.channel;
-    saveDb(db);
-
-    sendJson(res, 200, { ok: true, weeklyPostLimit, scheduleSlots });
+    sendJson(res, 200, { ok: true, channelId: channel.id, mode, modeTitle: modeTitle(mode) });
     return;
   }
 
@@ -2710,11 +2365,50 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (url.pathname === "/api/offers/cancel" && req.method === "POST") {
+  if (url.pathname === "/api/webapp/channel/settings" && req.method === "POST") {
     const body = await readJsonBody(req);
-    const ctx = ensureConnectedContext(body.token);
-    if (!ctx) {
-      sendJson(res, 404, { error: "Not found" });
+    const initData = parseWebAppInitDataFromReq(req, url, body);
+    const ctx = ensureWebAppContextByInitData(initData);
+    if (!ctx.ok) {
+      sendJson(res, ctx.code, { error: ctx.error });
+      return;
+    }
+    const channelId = String(body.channelId || "").trim();
+    const targetChannel = channelId
+      ? listChannelsForBlogger(ctx.blogger.id).find((item) => String(item.id) === channelId)
+      : ctx.channel;
+    if (!targetChannel) {
+      sendJson(res, 404, { error: "Channel not found" });
+      return;
+    }
+
+    const weeklyPostLimit = Number(body.weeklyPostLimit);
+    if (!Number.isInteger(weeklyPostLimit) || weeklyPostLimit < 1 || weeklyPostLimit > 28) {
+      sendJson(res, 400, { error: "Invalid weeklyPostLimit" });
+      return;
+    }
+    const scheduleSlots = normalizeScheduleSlots(body.scheduleSlots);
+    if (!scheduleSlots.length) {
+      sendJson(res, 400, { error: "scheduleSlots is required" });
+      return;
+    }
+
+    targetChannel.weeklyPostLimit = weeklyPostLimit;
+    targetChannel.scheduleSlots = scheduleSlots;
+    targetChannel.updatedAt = Date.now();
+    db.channels[targetChannel.id] = targetChannel;
+    saveDb(db);
+
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (url.pathname === "/api/webapp/offer-action" && req.method === "POST") {
+    const body = await readJsonBody(req);
+    const initData = parseWebAppInitDataFromReq(req, url, body);
+    const ctx = ensureWebAppContextByInitData(initData);
+    if (!ctx.ok) {
+      sendJson(res, ctx.code, { error: ctx.error });
       return;
     }
 
@@ -2723,23 +2417,67 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 400, { error: "Invalid offerId" });
       return;
     }
-
-    const offer = db.offers[String(offerId)];
+    const offer = getWebAppOfferForBlogger(ctx.blogger.id, offerId);
     if (!offer) {
       sendJson(res, 404, { error: "Offer not found" });
       return;
     }
-    if (String(offer.bloggerId) !== String(ctx.blogger.id)) {
-      sendJson(res, 403, { error: "Offer is assigned to another blogger" });
-      return;
-    }
-    if (!canCancelOffer(offer.status)) {
-      sendJson(res, 400, { error: "Offer is not active" });
+
+    const action = String(body.action || "").trim();
+    if (action === "approve") {
+      if (!canWebAppApprove(offer)) {
+        sendJson(res, 400, { error: "Offer is not awaiting approval" });
+        return;
+      }
+      await approveOffer(offer, BT.offer.flow.approved(offer.id));
+      sendJson(res, 200, { ok: true, offer: toOfferDto(offer) });
       return;
     }
 
-    await cancelOfferByBlogger(offer);
-    sendJson(res, 200, { ok: true, offer: toOfferDto(offer) });
+    if (action === "decline") {
+      if (!canWebAppDecline(offer)) {
+        sendJson(res, 400, { error: "Offer is not awaiting decision" });
+        return;
+      }
+      await declineOfferByBlogger(offer);
+      sendJson(res, 200, { ok: true, offer: toOfferDto(offer) });
+      return;
+    }
+
+    if (action === "cancel_scheduled") {
+      if (!canWebAppCancelScheduled(offer)) {
+        sendJson(res, 400, { error: "Offer is not scheduled" });
+        return;
+      }
+      await cancelOfferByBlogger(offer);
+      sendJson(res, 200, { ok: true, offer: toOfferDto(offer) });
+      return;
+    }
+
+    if (action === "pick_time") {
+      const slotTs = Number(body.slotTs);
+      if (!Number.isFinite(slotTs)) {
+        sendJson(res, 400, { error: "Invalid slotTs" });
+        return;
+      }
+      if (!canRescheduleOffer(offer)) {
+        sendJson(res, 400, { error: "Offer cannot be rescheduled" });
+        return;
+      }
+      if (!canUseDateTimeInOfferRange(offer, slotTs)) {
+        sendJson(res, 400, { error: "Slot is unavailable" });
+        return;
+      }
+      const ok = await rescheduleOffer(offer, slotTs);
+      if (!ok) {
+        sendJson(res, 400, { error: "Slot is unavailable" });
+        return;
+      }
+      sendJson(res, 200, { ok: true, offer: toOfferDto(offer) });
+      return;
+    }
+
+    sendJson(res, 400, { error: "Invalid action" });
     return;
   }
 
@@ -2885,7 +2623,7 @@ const server = http.createServer(async (req, res) => {
 
 async function boot() {
   server.listen(PORT, HOST, () => {
-    console.log(`CPV demo: http://${HOST}:${PORT}/cpvdemo/auth`);
+    console.log(`CPV demo: http://${HOST}:${PORT}/cpvdemo/advertiser`);
   });
 
   startBot().catch((err) => {

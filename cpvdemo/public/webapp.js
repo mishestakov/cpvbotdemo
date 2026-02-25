@@ -7,7 +7,9 @@ const els = {
   pauseDefaultBtn: document.getElementById("waPauseDefaultBtn"),
   pauseOtherBtn: document.getElementById("waPauseOtherBtn"),
   resumeBtn: document.getElementById("waResumeBtn"),
+  scheduleBtn: document.getElementById("waScheduleBtn"),
   pauseHint: document.getElementById("waPauseHint"),
+  scheduleHint: document.getElementById("waScheduleHint"),
   pauseSheet: document.getElementById("waPauseSheet"),
   offers: document.getElementById("waOffers"),
   filterUpcoming: document.getElementById("waFilterUpcoming"),
@@ -76,6 +78,12 @@ function renderList(root, items, emptyText) {
       `<div class="planned-meta">${item.scheduledAtText}</div>` +
       `<div class="planned-meta">CPV ${item.cpv} ₽ · доход ${item.estimatedIncome} ₽</div>` +
       `<div class="planned-meta pp-waOfferText">${text}</div>` +
+      `<div class="pp-waActions">` +
+      (item.canApprove ? `<button class="pp-waAction success" data-offer-action="approve" data-offer-id="${item.id}">Подтвердить</button>` : "") +
+      (item.canDecline ? `<button class="pp-waAction danger" data-offer-action="decline" data-offer-id="${item.id}">Отклонить</button>` : "") +
+      (item.canPickTime ? `<button class="pp-waAction primary" data-offer-action="pick_time" data-offer-id="${item.id}">Выбрать время</button>` : "") +
+      (item.canCancelScheduled ? `<button class="pp-waAction danger" data-offer-action="cancel_scheduled" data-offer-id="${item.id}">Отказаться</button>` : "") +
+      `</div>` +
       `</div>`;
     root.appendChild(card);
   }
@@ -163,6 +171,63 @@ function applyPauseView(state) {
   setText(els.pauseHint, "");
 }
 
+function buildHoursDefault(scheduleSlots) {
+  const hours = Array.from(
+    new Set((Array.isArray(scheduleSlots) ? scheduleSlots : []).map((slot) => Number(slot?.hour)).filter(Number.isInteger))
+  ).sort((a, b) => a - b);
+  return hours.join(",");
+}
+
+function parseHoursInput(value) {
+  const out = [];
+  const seen = new Set();
+  for (const chunk of String(value || "").split(",")) {
+    const hour = Number(String(chunk || "").trim());
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23) continue;
+    if (seen.has(hour)) continue;
+    seen.add(hour);
+    out.push(hour);
+  }
+  return out.sort((a, b) => a - b);
+}
+
+async function editSchedule() {
+  const channel = currentState?.channel || null;
+  if (!channel) return;
+  const currentLimit = Number(channel.weeklyPostLimit || 21);
+  const nextLimitRaw = window.prompt("Лимит публикаций в неделю (1..28):", String(currentLimit));
+  if (nextLimitRaw == null) return;
+  const nextLimit = Number(nextLimitRaw);
+  if (!Number.isInteger(nextLimit) || nextLimit < 1 || nextLimit > 28) {
+    setText(els.scheduleHint, "Некорректный лимит: укажите число 1..28.");
+    return;
+  }
+
+  const defaultHours = buildHoursDefault(channel.scheduleSlots);
+  const nextHoursRaw = window.prompt("Часы публикаций через запятую (0..23), применится на все дни:", defaultHours || "10,11,12");
+  if (nextHoursRaw == null) return;
+  const hours = parseHoursInput(nextHoursRaw);
+  if (!hours.length) {
+    setText(els.scheduleHint, "Некорректные часы: укажите хотя бы один час 0..23.");
+    return;
+  }
+  const scheduleSlots = [];
+  for (let day = 1; day <= 7; day += 1) {
+    for (const hour of hours) scheduleSlots.push({ day, hour });
+  }
+  try {
+    await apiPost("/api/webapp/channel/settings", {
+      channelId: currentChannelId || undefined,
+      weeklyPostLimit: nextLimit,
+      scheduleSlots
+    });
+    await loadState();
+    setText(els.scheduleHint, "Расписание сохранено.");
+  } catch (err) {
+    setText(els.scheduleHint, `Ошибка: ${err?.message || String(err)}`);
+  }
+}
+
 function renderState(state) {
   currentState = state;
   currentChannelId = String(state?.selectedChannelId || "");
@@ -172,6 +237,11 @@ function renderState(state) {
   const title = channel?.title || "Канал";
   const username = channel?.username ? `@${channel.username}` : "";
   setText(els.channel, username || title);
+  if (channel?.weeklyPostLimit && channel?.scheduleSlotsCount) {
+    setText(els.scheduleHint, `Лимит ${channel.weeklyPostLimit}/нед · слотов ${channel.scheduleSlotsCount}`);
+  } else {
+    setText(els.scheduleHint, "");
+  }
   setHidden(els.channel, isMultiChannel);
   renderChannelSelect(state);
   applyPauseView(state);
@@ -223,6 +293,53 @@ async function pauseForDays(days) {
   }
 }
 
+function flattenSlotsFromPages(pages) {
+  const out = [];
+  for (const page of Array.isArray(pages) ? pages : []) {
+    const dateLabel = String(page?.dateLabel || "");
+    for (const slot of Array.isArray(page?.slots) ? page.slots : []) {
+      out.push({
+        ts: Number(slot?.ts || 0),
+        label: `${dateLabel} ${String(slot?.timeLabel || "")}`.trim()
+      });
+    }
+  }
+  return out.filter((item) => Number.isFinite(item.ts) && item.ts > 0);
+}
+
+async function handleOfferAction(action, offerId) {
+  if (!Number.isInteger(offerId) || offerId <= 0) return;
+  const before = els.pauseHint?.textContent || "";
+  try {
+    if (action === "pick_time") {
+      const slotsRes = await apiGet(`/api/webapp/offer-pages?offerId=${offerId}`);
+      const slots = flattenSlotsFromPages(slotsRes?.pages || []).slice(0, 24);
+      if (!slots.length) {
+        setText(els.pauseHint, "Нет доступных слотов для переноса.");
+        return;
+      }
+      const lines = slots.map((slot, idx) => `${idx + 1}. ${slot.label}`).join("\n");
+      const input = window.prompt(`Введите номер слота:\n${lines}`, "1");
+      if (input == null) return;
+      const index = Number(input) - 1;
+      if (!Number.isInteger(index) || index < 0 || index >= slots.length) {
+        setText(els.pauseHint, "Некорректный номер слота.");
+        return;
+      }
+      await apiPost("/api/webapp/offer-action", { action, offerId, slotTs: slots[index].ts, channelId: currentChannelId || undefined });
+      await loadState();
+      setText(els.pauseHint, "Время публикации обновлено.");
+      return;
+    }
+    await apiPost("/api/webapp/offer-action", { action, offerId, channelId: currentChannelId || undefined });
+    await loadState();
+    setText(els.pauseHint, "Изменение сохранено.");
+  } catch (err) {
+    setText(els.pauseHint, `Ошибка: ${err?.message || String(err)}`);
+    if (before) setTimeout(() => setText(els.pauseHint, before), 2500);
+  }
+}
+
 async function boot() {
   webApp?.ready?.();
   webApp?.expand?.();
@@ -246,6 +363,9 @@ async function boot() {
   els.resumeBtn?.addEventListener("click", () => {
     togglePause().catch(() => {});
   });
+  els.scheduleBtn?.addEventListener("click", () => {
+    editSchedule().catch(() => {});
+  });
   els.channelSelect?.addEventListener("change", () => {
     currentChannelId = String(els.channelSelect?.value || "");
     loadState().catch(() => {});
@@ -254,6 +374,13 @@ async function boot() {
   els.filterPublished?.addEventListener("click", () => setFilter("published"));
   els.filterFailed?.addEventListener("click", () => setFilter("failed"));
   els.filterAll?.addEventListener("click", () => setFilter("all"));
+  els.offers?.addEventListener("click", (event) => {
+    const btn = event.target?.closest?.("[data-offer-action]");
+    if (!btn) return;
+    const action = String(btn.dataset.offerAction || "");
+    const offerId = Number(btn.dataset.offerId || 0);
+    handleOfferAction(action, offerId).catch(() => {});
+  });
 
   try {
     await loadState();
