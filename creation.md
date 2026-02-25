@@ -780,3 +780,12 @@
 ### 2026-02-25T09:10:00+03:00
 - Запрос пользователя: сохранить симметрию навигации по датам (3 кнопки), но на краях показывать хинт вместо реального перехода.
 - Что сделано: в `cpvdemo/server.js` добавлен noop-action `of:nh` для граничных стрелок и callback-хинт; в `cpvdemo/bot-texts.js` добавлен текст `edgeDateHint`.
+
+### 2026-02-25T09:30:00+03:00
+- Запрос пользователя: убрать обратную совместимость и упростить модель через дроп базы (без legacy-веток).
+- Что сделано:
+  - `cpvdemo/server.js`: удалён режим `manual_posting` и все его статусы/ветки обработки (`pending_manual_posting`, `manual_*`), удалены callbacks ручного режима и обработка `channel_post` для ERID-детекции.
+  - `cpvdemo/server.js`: упрощена нормализация режима (только `auto_with_precheck` и `manual_approval`), убраны legacy-mapping для `auto`/`manual_posting`.
+  - `cpvdemo/server.js`: webhook подписан только на `message` и `callback_query`.
+  - `cpvdemo/bot-texts.js`: удалены тексты и кнопки ручного режима, обновлён hint по `/pause` (только 2 режима).
+  - `product-flow.md`: переписан под актуальную продуктовую модель из двух режимов.

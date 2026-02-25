@@ -29,13 +29,6 @@ const BOT_CONNECT_RETRY_INTERVAL_MS = parseMsEnv("BOT_CONNECT_RETRY_INTERVAL_MS"
 const AUTH_SESSION_TTL_MS = parseMsEnv("AUTH_SESSION_TTL_MS", 30 * 60 * 1000, 60_000);
 const PRECHECK_DECISION_MS = parseMsEnv("PRECHECK_DECISION_MS", 60_000, 10_000);
 const OFFER_DEADLINE_CHECK_INTERVAL_MS = parseMsEnv("OFFER_DEADLINE_CHECK_INTERVAL_MS", 5_000, 1_000);
-const MANUAL_PUBLICATION_HOLD_MS = parseMsEnv("MANUAL_PUBLICATION_HOLD_MS", 60_000, 1_000);
-const MANUAL_PENDING_REMINDER_MAX = parseIntEnv("MANUAL_PENDING_REMINDER_MAX", 2, 0);
-const MANUAL_PENDING_REMINDER_INTERVAL_MS = parseMsEnv(
-  "MANUAL_PENDING_REMINDER_INTERVAL_MS",
-  24 * 60 * 60 * 1000,
-  1_000
-);
 const AUTO_PAUSE_DURATION_MS = parseMsEnv("AUTO_PAUSE_DURATION_MS", 24 * 60 * 60 * 1000, 1_000);
 const RU_HUMAN_DATE_TIME_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
   day: "numeric",
@@ -45,17 +38,13 @@ const RU_HUMAN_DATE_TIME_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
   hour12: false
 });
 
-const POSTING_MODES = ["auto", "auto_with_precheck", "manual_approval", "manual_posting"];
+const POSTING_MODES = ["auto_with_precheck", "manual_approval"];
 const MODE_TITLES = BT.mode.titles;
 const MODE_BUTTON_TITLES = BT.mode.buttonTitles;
 
 const ACTIVE_OFFER_STATUSES = new Set([
   "pending_precheck",
   "pending_approval",
-  "pending_manual_posting",
-  "manual_waiting_publication",
-  "manual_queued_publication",
-  "manual_publication_found",
   "scheduled"
 ]);
 
@@ -83,17 +72,8 @@ function parseMsEnv(name, fallbackMs, minMs) {
   return Math.max(minMs, Math.floor(value));
 }
 
-function parseIntEnv(name, fallback, min) {
-  const raw = process.env[name];
-  if (raw == null || raw === "") return fallback;
-  const value = Number(raw);
-  if (!Number.isFinite(value)) return fallback;
-  return Math.max(min, Math.floor(value));
-}
-
 function normalizeMode(mode) {
   const value = String(mode || "").trim();
-  if (value === "preapproval") return "auto_with_precheck";
   if (POSTING_MODES.includes(value)) return value;
   return "auto_with_precheck";
 }
@@ -110,7 +90,7 @@ function modeButtonTitle(mode) {
 
 function modeSupportsPause(mode) {
   const key = normalizeMode(mode);
-  return key === "auto" || key === "auto_with_precheck" || key === "manual_approval";
+  return key === "auto_with_precheck" || key === "manual_approval";
 }
 
 function formatError(err) {
@@ -153,19 +133,12 @@ function isOfferActive(offer) {
 }
 
 function canCancelOffer(status) {
-  return (
-    status === "pending_precheck" ||
-    status === "pending_approval" ||
-    status === "pending_manual_posting" ||
-    status === "manual_waiting_publication" ||
-    status === "manual_queued_publication" ||
-    status === "scheduled"
-  );
+  return status === "pending_precheck" || status === "pending_approval" || status === "scheduled";
 }
 
 function isOfferAwaitingDecision(offer) {
   const status = String(offer?.status || "");
-  return status === "pending_precheck" || status === "pending_approval" || status === "pending_manual_posting";
+  return status === "pending_precheck" || status === "pending_approval";
 }
 
 function isChannelAutoPaused(channel, now = Date.now()) {
@@ -244,13 +217,11 @@ function normalizeDb(raw) {
   }
 
   for (const offer of Object.values(db.offers)) {
+    offer.modeAtCreation = normalizeMode(offer.modeAtCreation);
     offer.uiState = String(offer.uiState || "main");
     offer.bloggerDeclineReason = offer.bloggerDeclineReason ? String(offer.bloggerDeclineReason) : null;
     offer.eridTag = String(offer.eridTag || `demo-${offer.id}`);
     offer.adMessageId = Number.isInteger(Number(offer.adMessageId)) ? Number(offer.adMessageId) : null;
-    offer.manualPublicationFoundAt = Number.isFinite(Number(offer.manualPublicationFoundAt))
-      ? Number(offer.manualPublicationFoundAt)
-      : null;
     const fallbackAt = Number.isFinite(Number(offer.scheduledAt)) ? Number(offer.scheduledAt) : Date.now();
     offer.availabilityFromAt = Number.isFinite(Number(offer.availabilityFromAt))
       ? Number(offer.availabilityFromAt)
@@ -261,12 +232,6 @@ function normalizeDb(raw) {
     if (offer.availabilityToAt < offer.availabilityFromAt) {
       offer.availabilityToAt = offer.availabilityFromAt;
     }
-    offer.manualReminderCount = Number.isInteger(Number(offer.manualReminderCount))
-      ? Math.max(0, Number(offer.manualReminderCount))
-      : 0;
-    offer.manualReminderSentAt = Number.isFinite(Number(offer.manualReminderSentAt))
-      ? Number(offer.manualReminderSentAt)
-      : null;
   }
 
   return db;
@@ -387,13 +352,6 @@ function buildMarkedAdText(textRaw, eridTag) {
   return `${body}\n\n${marker}`;
 }
 
-function manualHoldDurationText() {
-  if (MANUAL_PUBLICATION_HOLD_MS % 60_000 === 0) {
-    return BT.offer.flow.holdMinutes(MANUAL_PUBLICATION_HOLD_MS / 60_000);
-  }
-  return BT.offer.flow.holdSeconds(Math.ceil(MANUAL_PUBLICATION_HOLD_MS / 1000));
-}
-
 function listBloggers() {
   return Object.values(db.bloggers);
 }
@@ -412,12 +370,6 @@ function getBloggerById(bloggerId) {
 
 function getChannelById(channelId) {
   return db.channels[String(channelId || "").trim()] || null;
-}
-
-function getChannelByChatId(chatId) {
-  const target = Number(chatId || 0);
-  if (!target) return null;
-  return listChannels().find((item) => Number(item.chatId || 0) === target) || null;
 }
 
 function listChannelsForBlogger(bloggerId) {
@@ -1222,15 +1174,6 @@ function buildOfferKeyboard(offer, pageFromCallback) {
     rows.push([{ text: BT.buttons.approve, callback_data: `of:ap:${offer.id}`, style: "success" }]);
     rows.push([{ text: BT.buttons.pickTime, callback_data: `of:tm:${offer.id}`, style: "primary" }]);
     rows.push([{ text: BT.buttons.decline, callback_data: `of:dr:${offer.id}`, style: "danger" }]);
-  } else if (offer.status === "pending_manual_posting") {
-    rows.push([{ text: BT.buttons.getErid, callback_data: `of:me:${offer.id}` }]);
-    rows.push([{ text: BT.buttons.pickTime, callback_data: `of:tm:${offer.id}` }]);
-    rows.push([{ text: BT.buttons.decline, callback_data: `of:dr:${offer.id}` }]);
-  } else if (offer.status === "manual_waiting_publication") {
-    rows.push([{ text: BT.buttons.queuePosted, callback_data: `of:mq:${offer.id}` }]);
-    rows.push([{ text: BT.buttons.doNotPublish, callback_data: `of:bc:${offer.id}` }]);
-  } else if (offer.status === "manual_queued_publication") {
-    rows.push([{ text: BT.buttons.doNotPublish, callback_data: `of:bc:${offer.id}` }]);
   } else if (offer.status === "scheduled") {
     rows.push([{ text: BT.buttons.cancelScheduled, callback_data: `of:bc:${offer.id}` }]);
   }
@@ -1326,7 +1269,6 @@ function offerSummaryText(offer) {
   const uiState = getOfferUiState(offer);
   const channelLabel = offerChannelLabel(offer);
   const whenText = formatDateTimeHumanRu(offer.scheduledAt);
-  const erid = offer.eridTag || `demo-${offer.id}`;
   const cpmArgs = { channelLabel, whenText, cpv: offer.cpv, income: offer.estimatedIncome };
 
   if (uiState === "pick_time") {
@@ -1339,22 +1281,6 @@ function offerSummaryText(offer) {
 
   if (offer.status === "pending_approval") {
     return BT.offer.summary.approval(cpmArgs);
-  }
-
-  if (offer.status === "pending_manual_posting") {
-    return BT.offer.summary.manualPending(cpmArgs);
-  }
-
-  if (offer.status === "manual_waiting_publication") {
-    return BT.offer.summary.manualWaiting({ ...cpmArgs, erid });
-  }
-
-  if (offer.status === "manual_queued_publication") {
-    return BT.offer.summary.manualQueued({ ...cpmArgs, erid });
-  }
-
-  if (offer.status === "manual_publication_found") {
-    return BT.offer.summary.manualFound({ ...cpmArgs, erid, holdText: manualHoldDurationText() });
   }
 
   return BT.offer.summary.genericCard({
@@ -1371,31 +1297,7 @@ function offerSummaryText(offer) {
   });
 }
 
-function buildManualPendingReminderText(offer, isLastReminder) {
-  const lines = [
-    BT.offer.reminders.pendingManualHeader(offer.id),
-    BT.offer.reminders.pendingManualBody
-  ];
-  if (isLastReminder) {
-    lines.push("");
-    lines.push(BT.offer.reminders.pendingManualLastTitle);
-    lines.push(BT.offer.reminders.pendingManualLastBody);
-  }
-  return lines.join("\n");
-}
-
-function buildManualPendingReminderKeyboard(offer) {
-  return {
-    inline_keyboard: [
-      [{ text: BT.buttons.pickTime, callback_data: `of:tm:${offer.id}` }],
-      [{ text: BT.buttons.getErid, callback_data: `of:me:${offer.id}` }],
-      [{ text: BT.buttons.decline, callback_data: `of:dr:${offer.id}` }]
-    ]
-  };
-}
-
 async function upsertOfferMessage(offer, pageFromCallback) {
-  if (offer?.modeAtCreation === "auto") return;
   if (!offer.chatId) return;
 
   if (!offer.adMessageId) {
@@ -1441,13 +1343,7 @@ function createOffer({ blogger, channel, scheduledAt, dateFrom, dateTo, textRaw,
   const valueCpv = Number.isFinite(Number(cpv)) ? Math.max(100, Math.round(Number(cpv))) : 900;
   const estimatedIncome = Math.round(valueCpv * 0.85);
 
-  const status = mode === "auto"
-    ? "scheduled"
-    : mode === "auto_with_precheck"
-      ? "pending_precheck"
-      : mode === "manual_approval"
-        ? "pending_approval"
-        : "pending_manual_posting";
+  const status = mode === "manual_approval" ? "pending_approval" : "pending_precheck";
 
   const offer = {
     id,
@@ -1466,8 +1362,6 @@ function createOffer({ blogger, channel, scheduledAt, dateFrom, dateTo, textRaw,
     selectedDatePage: 0,
     uiState: "main",
     bloggerDeclineReason: null,
-    manualReminderCount: 0,
-    manualReminderSentAt: null,
     adMessageId: null,
     bloggerId: blogger.id,
     bloggerUsername: blogger.tgUsername,
@@ -1518,9 +1412,6 @@ function pickScheduledTimeForBlogger(channel, bloggerId, dateFrom, dateTo, index
 }
 
 async function notifyOfferCreated(offer) {
-  if (offer.modeAtCreation === "auto") {
-    return;
-  }
   await ensureManualApprovalTopic(offer);
   await upsertOfferMessage(offer, 0);
 }
@@ -1565,24 +1456,8 @@ async function cancelOfferByAdvertiser(offer) {
   db.offers[String(offer.id)] = offer;
   saveDb(db);
   await upsertOfferMessage(offer);
-  if (offer.modeAtCreation !== "auto") {
-    await sendOfferMessage(offer, BT.offer.flow.cancelledByAdvertiser(offer.id));
-  }
+  await sendOfferMessage(offer, BT.offer.flow.cancelledByAdvertiser(offer.id));
   await finalizeManualApprovalTopicIfNeeded(offer);
-}
-
-async function acceptManualPostingOffer(offer) {
-  offer.status = "scheduled";
-  offer.decisionDeadlineAt = null;
-  offer.uiState = "main";
-  db.offers[String(offer.id)] = offer;
-  saveDb(db);
-  await upsertOfferMessage(offer);
-  await sendBotMessage(offer.chatId, [
-    BT.offer.flow.acceptedManual(offer.id),
-    BT.offer.flow.markedTextLabel,
-    offer.textMarked
-  ].join("\n"));
 }
 
 function canUseSlot(offer, slotTs) {
@@ -1644,123 +1519,29 @@ async function processOfferDeadlines() {
         continue;
       }
 
-      if (offer.status === "pending_manual_posting" && now >= Number(offer.scheduledAt)) {
-        const windowToAt = Number(offer.availabilityToAt || offer.scheduledAt || 0);
-        if (Number.isFinite(windowToAt) && now > windowToAt) {
-          offer.status = "archived_not_published";
-          offer.decisionDeadlineAt = null;
-          offer.uiState = "main";
-          db.offers[String(offer.id)] = offer;
-          saveDb(db);
-          upsertOfferMessage(offer).catch(() => {});
-          sendBotMessage(
-            offer.chatId,
-            BT.offer.flow.manualWindowExpired(offer.id)
-          ).catch(() => {});
-          continue;
-        }
-
-        const hasFutureSlots = buildOfferDatePages(offer).some((page) => Array.isArray(page?.slots) && page.slots.length > 0);
-        if (!hasFutureSlots) {
-          offer.status = "archived_not_published";
-          offer.decisionDeadlineAt = null;
-          offer.uiState = "main";
-          db.offers[String(offer.id)] = offer;
-          saveDb(db);
-          upsertOfferMessage(offer).catch(() => {});
-          sendBotMessage(
-            offer.chatId,
-            BT.offer.flow.noSlotsLeft(offer.id)
-          ).catch(() => {});
-          continue;
-        }
-
-        const reminderCount = Number.isInteger(Number(offer.manualReminderCount)) ? Number(offer.manualReminderCount) : 0;
-        const lastReminderAt = Number.isFinite(Number(offer.manualReminderSentAt)) ? Number(offer.manualReminderSentAt) : 0;
-        const shouldSendReminder = reminderCount < MANUAL_PENDING_REMINDER_MAX &&
-          (reminderCount === 0 || now - lastReminderAt >= MANUAL_PENDING_REMINDER_INTERVAL_MS);
-
-        if (shouldSendReminder) {
-          offer.manualReminderCount = reminderCount + 1;
-          offer.manualReminderSentAt = now;
-          offer.uiState = "main";
-          db.offers[String(offer.id)] = offer;
-          saveDb(db);
-          upsertOfferMessage(offer).catch(() => {});
-          const isLastReminder = offer.manualReminderCount >= MANUAL_PENDING_REMINDER_MAX;
-          sendBotMessage(
-            offer.chatId,
-            buildManualPendingReminderText(offer, isLastReminder),
-            buildManualPendingReminderKeyboard(offer)
-          ).catch(() => {});
-        }
-        continue;
-      }
-
-      if (
-        (offer.status === "manual_waiting_publication" || offer.status === "manual_queued_publication") &&
-        now >= Number(offer.scheduledAt)
-      ) {
-        offer.status = "archived_not_published";
-        offer.uiState = "main";
-        db.offers[String(offer.id)] = offer;
-        saveDb(db);
-        upsertOfferMessage(offer).catch(() => {});
-        sendBotMessage(offer.chatId, BT.offer.flow.eridNotFoundByTime(offer.id)).catch(() => {});
-        continue;
-      }
-
       if (offer.status === "scheduled" && now >= Number(offer.scheduledAt)) {
-        if (
-          offer.modeAtCreation === "auto" ||
-          offer.modeAtCreation === "auto_with_precheck" ||
-          offer.modeAtCreation === "manual_approval"
-        ) {
-          const channelMessage = await publishOfferToChannel(offer);
-          if (channelMessage?.message_id) {
-            offer.status = "rewarded";
-            offer.uiState = "main";
-            offer.channelPostId = Number(channelMessage.message_id);
-            db.offers[String(offer.id)] = offer;
-            saveDb(db);
-            upsertOfferMessage(offer).catch(() => {});
-            sendOfferMessage(offer, BT.offer.flow.autoPublished(offer.id))
-              .then(() => finalizeManualApprovalTopicIfNeeded(offer))
-              .catch(() => {});
-          } else {
-            offer.status = "auto_publish_error";
-            offer.uiState = "main";
-            db.offers[String(offer.id)] = offer;
-            saveDb(db);
-            upsertOfferMessage(offer).catch(() => {});
-            sendOfferMessage(offer, BT.offer.flow.autoPublishError(offer.id))
-              .then(() => finalizeManualApprovalTopicIfNeeded(offer))
-              .catch(() => {});
-          }
-        } else if (offer.modeAtCreation === "manual_posting") {
-          offer.status = "archived_not_published";
-          offer.uiState = "main";
-          db.offers[String(offer.id)] = offer;
-          saveDb(db);
-          upsertOfferMessage(offer).catch(() => {});
-          sendBotMessage(
-            offer.chatId,
-            BT.offer.flow.manualNotConfirmedInTime(offer.id)
-          ).catch(() => {});
-        }
-        continue;
-      }
-
-      if (offer.status === "manual_publication_found") {
-        const foundAt = Number(offer.manualPublicationFoundAt || 0);
-        if (foundAt > 0 && now - foundAt >= MANUAL_PUBLICATION_HOLD_MS) {
+        const channelMessage = await publishOfferToChannel(offer);
+        if (channelMessage?.message_id) {
           offer.status = "rewarded";
           offer.uiState = "main";
+          offer.channelPostId = Number(channelMessage.message_id);
           db.offers[String(offer.id)] = offer;
           saveDb(db);
           upsertOfferMessage(offer).catch(() => {});
-          sendBotMessage(offer.chatId, BT.offer.flow.rewardReceived).catch(() => {});
+          sendOfferMessage(offer, BT.offer.flow.autoPublished(offer.id))
+            .then(() => finalizeManualApprovalTopicIfNeeded(offer))
+            .catch(() => {});
+        } else {
+          offer.status = "auto_publish_error";
+          offer.uiState = "main";
+          db.offers[String(offer.id)] = offer;
+          saveDb(db);
+          upsertOfferMessage(offer).catch(() => {});
+          sendOfferMessage(offer, BT.offer.flow.autoPublishError(offer.id))
+            .then(() => finalizeManualApprovalTopicIfNeeded(offer))
+            .catch(() => {});
         }
+        continue;
       }
     }
   } finally {
@@ -2329,16 +2110,6 @@ async function handleOfferCallback(query, parsed) {
     return;
   }
 
-  if (parsed.action === "rb") {
-    await answerCallbackQuery(query.id, BT.callback.deprecatedStep);
-    return;
-  }
-
-  if (parsed.action === "rr") {
-    await answerCallbackQuery(query.id, BT.callback.deprecatedStep);
-    return;
-  }
-
   if (parsed.action === "ap") {
     if (offer.status !== "pending_precheck" && offer.status !== "pending_approval") {
       await answerCallbackQuery(query.id, offerProcessedCallbackText(offer));
@@ -2346,55 +2117,6 @@ async function handleOfferCallback(query, parsed) {
     }
     await approveOffer(offer, BT.offer.flow.approved(offer.id));
     await answerCallbackQuery(query.id, BT.callback.approved);
-    return;
-  }
-
-  if (parsed.action === "me") {
-    if (offer.status !== "pending_manual_posting") {
-      await answerCallbackQuery(query.id, offerProcessedCallbackText(offer));
-      return;
-    }
-    offer.status = "manual_waiting_publication";
-    offer.uiState = "main";
-    db.offers[String(offer.id)] = offer;
-    saveDb(db);
-    await upsertOfferMessage(offer);
-    await sendBotMessage(
-      offer.chatId,
-      [
-        BT.offer.flow.eridInfo(offer.id, offer.eridTag || `demo-${offer.id}`),
-        BT.offer.flow.eridRule,
-        "",
-        BT.offer.flow.textForPublication,
-        offer.textMarked
-      ].join("\n")
-    );
-    await answerCallbackQuery(query.id, BT.callback.eridSent);
-    return;
-  }
-
-  if (parsed.action === "mq") {
-    if (offer.status !== "manual_waiting_publication") {
-      await answerCallbackQuery(query.id, offerProcessedCallbackText(offer));
-      return;
-    }
-    offer.status = "manual_queued_publication";
-    offer.uiState = "main";
-    db.offers[String(offer.id)] = offer;
-    saveDb(db);
-    await upsertOfferMessage(offer);
-    await sendBotMessage(offer.chatId, BT.offer.flow.queuedThanks);
-    await answerCallbackQuery(query.id, BT.callback.marked);
-    return;
-  }
-
-  if (parsed.action === "mp") {
-    if (offer.status !== "pending_manual_posting") {
-      await answerCallbackQuery(query.id, offerProcessedCallbackText(offer));
-      return;
-    }
-    await acceptManualPostingOffer(offer);
-    await answerCallbackQuery(query.id, BT.callback.accepted);
     return;
   }
 
@@ -2411,60 +2133,7 @@ async function handleOfferCallback(query, parsed) {
   await answerCallbackQuery(query.id, BT.callback.unknownAction);
 }
 
-function extractChannelPostText(post) {
-  const text = String(post?.text || "").trim();
-  const caption = String(post?.caption || "").trim();
-  return [text, caption].filter(Boolean).join("\n");
-}
-
-async function handleChannelPostUpdate(post) {
-  const chatId = Number(post?.chat?.id || 0);
-  if (!chatId) return;
-
-  const channel = getChannelByChatId(chatId);
-  if (!channel) return;
-
-  const body = extractChannelPostText(post);
-  if (!body) return;
-  const bodyLower = body.toLowerCase();
-
-  const targets = listOffers()
-    .filter((offer) =>
-      String(offer.channelId) === String(channel.id) &&
-      (offer.status === "manual_waiting_publication" || offer.status === "manual_queued_publication")
-    )
-    .sort((a, b) => a.id - b.id);
-
-  for (const offer of targets) {
-    const eridTag = String(offer.eridTag || `demo-${offer.id}`).toLowerCase();
-    if (!eridTag || !bodyLower.includes(eridTag)) continue;
-
-    offer.status = "manual_publication_found";
-    offer.uiState = "main";
-    offer.manualPublicationFoundAt = Date.now();
-    offer.channelPostId = Number(post?.message_id || 0) || null;
-    db.offers[String(offer.id)] = offer;
-    saveDb(db);
-
-    await upsertOfferMessage(offer);
-    await sendBotMessage(
-      offer.chatId,
-      BT.offer.flow.publicationFound(manualHoldDurationText())
-    );
-  }
-}
-
 async function processTelegramUpdate(update) {
-  if (update?.channel_post) {
-    await handleChannelPostUpdate(update.channel_post);
-    return;
-  }
-
-  if (update?.edited_channel_post) {
-    await handleChannelPostUpdate(update.edited_channel_post);
-    return;
-  }
-
   const message = update?.message;
   const text = String(message?.text || "");
 
@@ -2528,7 +2197,7 @@ async function startBot() {
 
     await tgApiWithRetry("setWebhook", {
       url: webhookUrl,
-      allowed_updates: ["message", "callback_query", "channel_post", "edited_channel_post"],
+      allowed_updates: ["message", "callback_query"],
       secret_token: WEBHOOK_SECRET_TOKEN,
       drop_pending_updates: WEBHOOK_DROP_PENDING_UPDATES
     });
