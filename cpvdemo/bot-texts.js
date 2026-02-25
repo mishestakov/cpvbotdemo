@@ -151,6 +151,7 @@ module.exports = {
     slotUpdated: "Время обновлено",
     slotUnavailable: "Слот недоступен",
     chooseSlot: "Выберите слот",
+    edgeDateHint: "Это крайняя доступная дата",
     declined: "Отклонено",
     deprecatedStep: "Шаг больше не используется",
     approved: "Подтверждено",
@@ -355,6 +356,10 @@ module.exports = {
         return `Публикация найдена. Она должна провисеть минимум ${holdText}, чтобы было начислено вознаграждение.`;
       },
       rewardReceived: "Деньги за публикацию начислены, теперь её можно удалить."
+      ,
+      topicClosedInMain(id, statusTitleText) {
+        return `Оффер #${id} завершён (${statusTitleText}).`;
+      }
     }
   },
 

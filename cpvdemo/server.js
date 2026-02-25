@@ -775,6 +775,9 @@ async function sendBotMessage(chatId, text, replyMarkup, options) {
       reply_markup: replyMarkup || undefined,
       parse_mode: options?.parseMode || undefined
     };
+    if (Number.isInteger(Number(options?.messageThreadId)) && Number(options.messageThreadId) > 0) {
+      payload.message_thread_id = Number(options.messageThreadId);
+    }
     if (Number.isInteger(Number(options?.replyToMessageId)) && Number(options.replyToMessageId) > 0) {
       payload.reply_to_message_id = Number(options.replyToMessageId);
     }
@@ -798,7 +801,7 @@ async function editBotMessage(chatId, messageId, text, replyMarkup, options) {
     });
   } catch (err) {
     const message = String(err?.message || "").toLowerCase();
-    if (message.includes("message is not modified")) return null;
+    if (message.includes("message is not modified")) return { ok: true, notModified: true };
     botState.lastError = formatError(err);
     return null;
   }
@@ -1187,9 +1190,13 @@ function buildOfferKeyboard(offer, pageFromCallback) {
       const prevPage = clamp(currentPage - 1, 0, pages.length - 1);
       const nextPage = clamp(currentPage + 1, 0, pages.length - 1);
       rows.push([
-        { text: BT.buttons.pagerPrev, callback_data: `of:pd:${offer.id}:${prevPage}` },
+        currentPage > 0
+          ? { text: BT.buttons.pagerPrev, callback_data: `of:pd:${offer.id}:${prevPage}` }
+          : { text: BT.buttons.pagerPrev, callback_data: `of:nh:${offer.id}` },
         { text: `📅 ${pages[currentPage].dateLabel}`, callback_data: `of:pd:${offer.id}:${currentPage}` },
-        { text: BT.buttons.pagerNext, callback_data: `of:pd:${offer.id}:${nextPage}` }
+        currentPage < pages.length - 1
+          ? { text: BT.buttons.pagerNext, callback_data: `of:pd:${offer.id}:${nextPage}` }
+          : { text: BT.buttons.pagerNext, callback_data: `of:nh:${offer.id}` }
       ]);
 
       const timeButtons = pages[currentPage].slots.map((slot) => ({
@@ -1208,10 +1215,13 @@ function buildOfferKeyboard(offer, pageFromCallback) {
     return rows.length ? { inline_keyboard: rows } : null;
   }
 
-  if (offer.status === "pending_precheck" || offer.status === "pending_approval") {
-    rows.push([{ text: BT.buttons.approve, callback_data: `of:ap:${offer.id}` }]);
-    rows.push([{ text: BT.buttons.pickTime, callback_data: `of:tm:${offer.id}` }]);
-    rows.push([{ text: BT.buttons.decline, callback_data: `of:dr:${offer.id}` }]);
+  if (offer.status === "pending_precheck") {
+    rows.push([{ text: BT.buttons.pickTime, callback_data: `of:tm:${offer.id}`, style: "primary" }]);
+    rows.push([{ text: BT.buttons.decline, callback_data: `of:dr:${offer.id}`, style: "danger" }]);
+  } else if (offer.status === "pending_approval") {
+    rows.push([{ text: BT.buttons.approve, callback_data: `of:ap:${offer.id}`, style: "success" }]);
+    rows.push([{ text: BT.buttons.pickTime, callback_data: `of:tm:${offer.id}`, style: "primary" }]);
+    rows.push([{ text: BT.buttons.decline, callback_data: `of:dr:${offer.id}`, style: "danger" }]);
   } else if (offer.status === "pending_manual_posting") {
     rows.push([{ text: BT.buttons.getErid, callback_data: `of:me:${offer.id}` }]);
     rows.push([{ text: BT.buttons.pickTime, callback_data: `of:tm:${offer.id}` }]);
@@ -1226,6 +1236,90 @@ function buildOfferKeyboard(offer, pageFromCallback) {
   }
 
   return rows.length ? { inline_keyboard: rows } : null;
+}
+
+function getOfferThreadId(offer) {
+  const value = Number(offer?.topicThreadId || 0);
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function offerMessageOptions(offer, options) {
+  const out = { ...(options || {}) };
+  if (offer?.modeAtCreation === "manual_approval") {
+    const threadId = getOfferThreadId(offer);
+    if (threadId) out.messageThreadId = threadId;
+  }
+  return out;
+}
+
+async function sendOfferMessage(offer, text, replyMarkup, options) {
+  return sendBotMessage(offer.chatId, text, replyMarkup, offerMessageOptions(offer, options));
+}
+
+function manualApprovalTopicFinalSummary(offer) {
+  const income = String(offer?.status || "") === "rewarded" ? Number(offer?.estimatedIncome || 0) : 0;
+  return [
+    `Итог по офферу #${offer.id}`,
+    `Статус: ${statusTitle(offer.status)}`,
+    `Время выхода: ${formatDateTime(offer.scheduledAt)}`,
+    `Начислено: ${income} ₽`
+  ].join("\n");
+}
+
+async function ensureManualApprovalTopic(offer) {
+  if (!offer || offer.modeAtCreation !== "manual_approval") return;
+  if (!offer.chatId || getOfferThreadId(offer)) return;
+  try {
+    const topic = await tgApiWithRetry("createForumTopic", {
+      chat_id: offer.chatId,
+      name: `Оффер #${offer.id}`
+    });
+    const threadId = Number(topic?.message_thread_id || 0);
+    if (Number.isInteger(threadId) && threadId > 0) {
+      offer.topicThreadId = threadId;
+      offer.topicClosedAt = null;
+      db.offers[String(offer.id)] = offer;
+      saveDb(db);
+    }
+  } catch (err) {
+    console.warn(`createForumTopic failed for offer #${offer?.id}: ${formatError(err)}`);
+  }
+}
+
+async function finalizeManualApprovalTopicIfNeeded(offer) {
+  if (!offer || offer.modeAtCreation !== "manual_approval") return;
+  const threadId = getOfferThreadId(offer);
+  if (!threadId || offer.topicClosedAt) return;
+  const finalStatuses = new Set([
+    "declined_by_blogger",
+    "cancelled_by_advertiser",
+    "cancelled_by_blogger",
+    "archived_not_published",
+    "auto_publish_error",
+    "rewarded"
+  ]);
+  if (!finalStatuses.has(String(offer.status || ""))) return;
+
+  offer.topicClosedAt = Date.now();
+  db.offers[String(offer.id)] = offer;
+  saveDb(db);
+
+  await sendOfferMessage(offer, manualApprovalTopicFinalSummary(offer));
+  setTimeout(() => {
+    tgApiWithRetry("deleteForumTopic", {
+      chat_id: offer.chatId,
+      message_thread_id: threadId
+    })
+      .then(() =>
+        sendBotMessage(
+          offer.chatId,
+          BT.offer.flow.topicClosedInMain(offer.id, statusTitle(offer.status))
+        )
+      )
+      .catch((err) => {
+        console.warn(`deleteForumTopic failed for offer #${offer.id}: ${formatError(err)}`);
+      });
+  }, 3000);
 }
 
 function offerSummaryText(offer) {
@@ -1305,7 +1399,7 @@ async function upsertOfferMessage(offer, pageFromCallback) {
   if (!offer.chatId) return;
 
   if (!offer.adMessageId) {
-    const adSent = await sendBotMessage(offer.chatId, offer.textRaw);
+    const adSent = await sendOfferMessage(offer, offer.textRaw);
     if (adSent?.message_id) {
       offer.adMessageId = adSent.message_id;
       db.offers[String(offer.id)] = offer;
@@ -1321,7 +1415,7 @@ async function upsertOfferMessage(offer, pageFromCallback) {
     if (edited) return;
   }
 
-  const sent = await sendBotMessage(offer.chatId, text, keyboard, {
+  const sent = await sendOfferMessage(offer, text, keyboard, {
     replyToMessageId: Number(offer.adMessageId || 0) || undefined
   });
   if (sent?.message_id) {
@@ -1427,6 +1521,7 @@ async function notifyOfferCreated(offer) {
   if (offer.modeAtCreation === "auto") {
     return;
   }
+  await ensureManualApprovalTopic(offer);
   await upsertOfferMessage(offer, 0);
 }
 
@@ -1437,7 +1532,7 @@ async function approveOffer(offer, reasonText) {
   db.offers[String(offer.id)] = offer;
   saveDb(db);
   await upsertOfferMessage(offer);
-  if (reasonText) await sendBotMessage(offer.chatId, reasonText);
+  if (reasonText) await sendOfferMessage(offer, reasonText);
 }
 
 async function declineOfferByBlogger(offer) {
@@ -1448,7 +1543,8 @@ async function declineOfferByBlogger(offer) {
   db.offers[String(offer.id)] = offer;
   saveDb(db);
   await upsertOfferMessage(offer);
-  await sendBotMessage(offer.chatId, BT.offer.flow.declined(offer.id));
+  await sendOfferMessage(offer, BT.offer.flow.declined(offer.id));
+  await finalizeManualApprovalTopicIfNeeded(offer);
 }
 
 async function cancelOfferByBlogger(offer) {
@@ -1458,7 +1554,8 @@ async function cancelOfferByBlogger(offer) {
   db.offers[String(offer.id)] = offer;
   saveDb(db);
   await upsertOfferMessage(offer);
-  await sendBotMessage(offer.chatId, BT.offer.flow.cancelledByBlogger(offer.id));
+  await sendOfferMessage(offer, BT.offer.flow.cancelledByBlogger(offer.id));
+  await finalizeManualApprovalTopicIfNeeded(offer);
 }
 
 async function cancelOfferByAdvertiser(offer) {
@@ -1469,8 +1566,9 @@ async function cancelOfferByAdvertiser(offer) {
   saveDb(db);
   await upsertOfferMessage(offer);
   if (offer.modeAtCreation !== "auto") {
-    await sendBotMessage(offer.chatId, BT.offer.flow.cancelledByAdvertiser(offer.id));
+    await sendOfferMessage(offer, BT.offer.flow.cancelledByAdvertiser(offer.id));
   }
+  await finalizeManualApprovalTopicIfNeeded(offer);
 }
 
 async function acceptManualPostingOffer(offer) {
@@ -1540,7 +1638,9 @@ async function processOfferDeadlines() {
         db.offers[String(offer.id)] = offer;
         saveDb(db);
         upsertOfferMessage(offer).catch(() => {});
-        sendBotMessage(offer.chatId, BT.offer.flow.approvalExpired(offer.id)).catch(() => {});
+        sendOfferMessage(offer, BT.offer.flow.approvalExpired(offer.id))
+          .then(() => finalizeManualApprovalTopicIfNeeded(offer))
+          .catch(() => {});
         continue;
       }
 
@@ -1624,17 +1724,18 @@ async function processOfferDeadlines() {
             db.offers[String(offer.id)] = offer;
             saveDb(db);
             upsertOfferMessage(offer).catch(() => {});
-            sendBotMessage(offer.chatId, BT.offer.flow.autoPublished(offer.id)).catch(() => {});
+            sendOfferMessage(offer, BT.offer.flow.autoPublished(offer.id))
+              .then(() => finalizeManualApprovalTopicIfNeeded(offer))
+              .catch(() => {});
           } else {
             offer.status = "auto_publish_error";
             offer.uiState = "main";
             db.offers[String(offer.id)] = offer;
             saveDb(db);
             upsertOfferMessage(offer).catch(() => {});
-            sendBotMessage(
-              offer.chatId,
-              BT.offer.flow.autoPublishError(offer.id)
-            ).catch(() => {});
+            sendOfferMessage(offer, BT.offer.flow.autoPublishError(offer.id))
+              .then(() => finalizeManualApprovalTopicIfNeeded(offer))
+              .catch(() => {});
           }
         } else if (offer.modeAtCreation === "manual_posting") {
           offer.status = "archived_not_published";
@@ -2197,6 +2298,11 @@ async function handleOfferCallback(query, parsed) {
     saveDb(db);
     await upsertOfferMessage(offer);
     await answerCallbackQuery(query.id, BT.callback.chooseSlot);
+    return;
+  }
+
+  if (parsed.action === "nh") {
+    await answerCallbackQuery(query.id, BT.callback.edgeDateHint);
     return;
   }
 
