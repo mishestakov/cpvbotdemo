@@ -6,6 +6,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const dns = require("node:dns");
 const dotenv = require("dotenv");
+const BT = require("./bot-texts");
 
 dotenv.config({ path: path.join(process.cwd(), ".env") });
 dns.setDefaultResultOrder("ipv4first");
@@ -45,18 +46,8 @@ const RU_HUMAN_DATE_TIME_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
 });
 
 const POSTING_MODES = ["auto", "auto_with_precheck", "manual_approval", "manual_posting"];
-const MODE_TITLES = {
-  auto: "Автоматически",
-  auto_with_precheck: "С предпросмотром (если не отклоню — выйдет)",
-  manual_approval: "Только после моего подтверждения",
-  manual_posting: "Ручная публикация"
-};
-const MODE_BUTTON_TITLES = {
-  auto: "Авто",
-  auto_with_precheck: "Предпросмотр",
-  manual_approval: "Подтверждение",
-  manual_posting: "Ручная"
-};
+const MODE_TITLES = BT.mode.titles;
+const MODE_BUTTON_TITLES = BT.mode.buttonTitles;
 
 const ACTIVE_OFFER_STATUSES = new Set([
   "pending_precheck",
@@ -68,30 +59,9 @@ const ACTIVE_OFFER_STATUSES = new Set([
   "scheduled"
 ]);
 
-const STATUS_TITLES = {
-  pending_precheck: "Ждёт решения (предпросмотр)",
-  pending_approval: "Ждёт подтверждения",
-  pending_manual_posting: "Ждёт принятия для ручной публикации",
-  manual_waiting_publication: "Ожидает публикацию с ERID",
-  manual_queued_publication: "Отложка подтверждена, ждём публикацию",
-  manual_publication_found: "Публикация найдена, идёт проверка",
-  rewarded: "Вознаграждение начислено",
-  archived_not_published: "Перенесено в архив (не размещено)",
-  auto_publish_error: "Ошибка автопубликации",
-  scheduled: "Согласован",
-  declined_by_blogger: "Отклонён блогером",
-  cancelled_by_advertiser: "Отменён рекламодателем",
-  cancelled_by_blogger: "Отменён блогером",
-  expired: "Истёк дедлайн"
-};
+const STATUS_TITLES = BT.statusTitles;
 
-const DEMO_AD_TEXTS = [
-  "Скидка 20% на подписку и бонусы для новых пользователей.",
-  "Запуск новой линейки продуктов: бесплатная доставка первую неделю.",
-  "Сервис для бизнеса: автоматизация отчетности и CRM в одном окне.",
-  "Образовательный курс: первый модуль бесплатно до конца недели.",
-  "Приложение для планирования: персональные рекомендации и аналитика."
-];
+const DEMO_AD_TEXTS = BT.offer.demoTexts;
 
 const botState = {
   enabled: false,
@@ -175,7 +145,7 @@ function statusTitle(status) {
 }
 
 function offerProcessedCallbackText(offer) {
-  return `Оффер уже в статусе: ${statusTitle(offer?.status)}.`;
+  return BT.callback.offerAlreadyProcessed(statusTitle(offer?.status));
 }
 
 function isOfferActive(offer) {
@@ -412,16 +382,16 @@ function formatDateTimeHumanRu(ts) {
 
 function buildMarkedAdText(textRaw, eridTag) {
   const body = String(textRaw || "").trim();
-  const marker = `Реклама. erid: ${String(eridTag || "").trim()}`;
+  const marker = BT.offer.flow.adMarker(eridTag);
   if (!body) return marker;
   return `${body}\n\n${marker}`;
 }
 
 function manualHoldDurationText() {
   if (MANUAL_PUBLICATION_HOLD_MS % 60_000 === 0) {
-    return `${MANUAL_PUBLICATION_HOLD_MS / 60_000} мин.`;
+    return BT.offer.flow.holdMinutes(MANUAL_PUBLICATION_HOLD_MS / 60_000);
   }
-  return `${Math.ceil(MANUAL_PUBLICATION_HOLD_MS / 1000)} сек.`;
+  return BT.offer.flow.holdSeconds(Math.ceil(MANUAL_PUBLICATION_HOLD_MS / 1000));
 }
 
 function listBloggers() {
@@ -871,7 +841,7 @@ function buildChannelRequestKeyboard() {
 
   return {
     keyboard: [[{
-      text: "Выбрать канал",
+      text: BT.buttons.chooseChannel,
       request_chat: {
         request_id: 1,
         chat_is_channel: true,
@@ -1015,26 +985,28 @@ function ensureChannelForBlogger(blogger, chatId, title, username) {
 }
 
 function channelLabel(channel) {
-  if (!channel) return "Канал";
+  if (!channel) return BT.channel.defaultLabel;
   if (channel.username) return `@${channel.username}`;
   if (channel.title) return channel.title;
-  return `канал ${channel.id || ""}`.trim();
+  return BT.channel.byId(channel.id);
 }
 
 function channelModeStatusLine(channel) {
   const pausePart = modeSupportsPause(channel?.postingMode) && isChannelAutoPaused(channel)
-    ? `, пауза до ${formatDateTimeHumanRu(channel.autoPausedUntilAt)}`
+    ? BT.channel.pausedUntil(formatDateTimeHumanRu(channel.autoPausedUntilAt))
     : "";
   return `• ${channelLabel(channel)} — ${modeButtonTitle(channel?.postingMode)}${pausePart}`;
 }
 
 function channelPauseStatusLine(channel) {
   if (!modeSupportsPause(channel?.postingMode)) {
-    return `• ${channelLabel(channel)} — ${modeButtonTitle(channel?.postingMode)}, пауза недоступна`;
+    return BT.channel.pauseNotAvailable(modeButtonTitle(channel?.postingMode), channelLabel(channel));
   }
-  return `• ${channelLabel(channel)} — ${modeButtonTitle(channel?.postingMode)}, ${
-    isChannelAutoPaused(channel) ? `на паузе до ${formatDateTimeHumanRu(channel.autoPausedUntilAt)}` : "публикации активны"
-  }`;
+  return BT.channel.pauseStatusLine(
+    modeButtonTitle(channel?.postingMode),
+    channelLabel(channel),
+    isChannelAutoPaused(channel) ? formatDateTimeHumanRu(channel.autoPausedUntilAt) : null
+  );
 }
 
 function buildChannelPickerKeyboard(prefix, channels) {
@@ -1049,13 +1021,13 @@ function buildPauseKeyboard(channel, withBack) {
   const rows = [];
   if (modeSupportsPause(channel?.postingMode)) {
     if (isChannelAutoPaused(channel)) {
-      rows.push([{ text: "▶️ Возобновить", callback_data: `pause:set:${channel.id}:resume` }]);
+      rows.push([{ text: BT.buttons.resume, callback_data: `pause:set:${channel.id}:resume` }]);
     } else {
-      rows.push([{ text: "⏸ Пауза 24 часа", callback_data: `pause:set:${channel.id}:24h` }]);
+      rows.push([{ text: BT.buttons.pause24h, callback_data: `pause:set:${channel.id}:24h` }]);
     }
   }
   if (withBack) {
-    rows.push([{ text: "⬅ Каналы", callback_data: "pause:list" }]);
+    rows.push([{ text: BT.buttons.backChannels, callback_data: "pause:list" }]);
   }
   return rows.length ? { inline_keyboard: rows } : null;
 }
@@ -1068,29 +1040,23 @@ function buildModeKeyboardForChannel(channel, withBack) {
     rows.push([{ text: `${mark}${modeButtonTitle(mode)}`, callback_data: `mode:set:${channel.id}:${mode}` }]);
   }
   if (withBack) {
-    rows.push([{ text: "⬅ Каналы", callback_data: "mode:list" }]);
+    rows.push([{ text: BT.buttons.backChannels, callback_data: "mode:list" }]);
   }
   return { inline_keyboard: rows };
 }
 
 function buildModeTextForChannel(channel, channels, withStatuses) {
   const lines = [];
-  lines.push(`<b>Канал:</b> ${channelLabel(channel)}`);
-  lines.push(`<b>Текущий режим:</b> ${modeTitle(channel?.postingMode || "auto_with_precheck")}`);
+  lines.push(BT.mode.panel.channelForPanel(channelLabel(channel)));
+  lines.push(BT.mode.panel.currentMode(modeTitle(channel?.postingMode || "auto_with_precheck")));
   if (modeSupportsPause(channel?.postingMode) && isChannelAutoPaused(channel)) {
-    lines.push(`<b>Пауза активна до:</b> ${formatDateTimeHumanRu(channel.autoPausedUntilAt)}`);
+    lines.push(BT.mode.panel.pauseActiveUntil(formatDateTimeHumanRu(channel.autoPausedUntilAt)));
   }
   lines.push("");
-  lines.push("<b>Как работают режимы:</b>");
-  lines.push("• Авто — тихий режим: новые офферы не приходят в личку. При необходимости поставьте паузу на 24 часа через /pause.");
-  lines.push("• Предпросмотр — бот присылает оффер заранее: можно подтвердить, выбрать другое время или отклонить.");
-  lines.push("• Подтверждение — пост выйдет только после вашего подтверждения.");
-  lines.push("• Ручная — получаете ERID и публикуете вручную.");
-  lines.push("");
-  lines.push("Выберите режим публикации:");
+  lines.push(BT.mode.panel.panelText);
   if (withStatuses) {
     lines.push("");
-    lines.push("<b>Статусы каналов:</b>");
+    lines.push(BT.chooser.statusesTitle);
     for (const item of channels) lines.push(channelModeStatusLine(item));
   }
   return lines.join("\n");
@@ -1221,9 +1187,9 @@ function buildOfferKeyboard(offer, pageFromCallback) {
       const prevPage = clamp(currentPage - 1, 0, pages.length - 1);
       const nextPage = clamp(currentPage + 1, 0, pages.length - 1);
       rows.push([
-        { text: "◀", callback_data: `of:pd:${offer.id}:${prevPage}` },
+        { text: BT.buttons.pagerPrev, callback_data: `of:pd:${offer.id}:${prevPage}` },
         { text: `📅 ${pages[currentPage].dateLabel}`, callback_data: `of:pd:${offer.id}:${currentPage}` },
-        { text: "▶", callback_data: `of:pd:${offer.id}:${nextPage}` }
+        { text: BT.buttons.pagerNext, callback_data: `of:pd:${offer.id}:${nextPage}` }
       ]);
 
       const timeButtons = pages[currentPage].slots.map((slot) => ({
@@ -1235,28 +1201,28 @@ function buildOfferKeyboard(offer, pageFromCallback) {
         rows.push(timeButtons.slice(i, i + 4));
       }
     } else {
-      rows.push([{ text: "Нет доступных слотов", callback_data: `of:pd:${offer.id}:0` }]);
+      rows.push([{ text: BT.buttons.noAvailableSlots, callback_data: `of:pd:${offer.id}:0` }]);
     }
 
-    rows.push([{ text: "⬅ Назад", callback_data: `of:tb:${offer.id}` }]);
+    rows.push([{ text: BT.buttons.back, callback_data: `of:tb:${offer.id}` }]);
     return rows.length ? { inline_keyboard: rows } : null;
   }
 
   if (offer.status === "pending_precheck" || offer.status === "pending_approval") {
-    rows.push([{ text: "✅ Подтвердить", callback_data: `of:ap:${offer.id}` }]);
-    rows.push([{ text: "🕒 Выбрать другое время", callback_data: `of:tm:${offer.id}` }]);
-    rows.push([{ text: "❌ Отклонить", callback_data: `of:dr:${offer.id}` }]);
+    rows.push([{ text: BT.buttons.approve, callback_data: `of:ap:${offer.id}` }]);
+    rows.push([{ text: BT.buttons.pickTime, callback_data: `of:tm:${offer.id}` }]);
+    rows.push([{ text: BT.buttons.decline, callback_data: `of:dr:${offer.id}` }]);
   } else if (offer.status === "pending_manual_posting") {
-    rows.push([{ text: "🏷 Получить ERID", callback_data: `of:me:${offer.id}` }]);
-    rows.push([{ text: "🕒 Выбрать другое время", callback_data: `of:tm:${offer.id}` }]);
-    rows.push([{ text: "❌ Отклонить", callback_data: `of:dr:${offer.id}` }]);
+    rows.push([{ text: BT.buttons.getErid, callback_data: `of:me:${offer.id}` }]);
+    rows.push([{ text: BT.buttons.pickTime, callback_data: `of:tm:${offer.id}` }]);
+    rows.push([{ text: BT.buttons.decline, callback_data: `of:dr:${offer.id}` }]);
   } else if (offer.status === "manual_waiting_publication") {
-    rows.push([{ text: "✅ Добавил в очередь постинга", callback_data: `of:mq:${offer.id}` }]);
-    rows.push([{ text: "🚫 Не публиковать", callback_data: `of:bc:${offer.id}` }]);
+    rows.push([{ text: BT.buttons.queuePosted, callback_data: `of:mq:${offer.id}` }]);
+    rows.push([{ text: BT.buttons.doNotPublish, callback_data: `of:bc:${offer.id}` }]);
   } else if (offer.status === "manual_queued_publication") {
-    rows.push([{ text: "🚫 Не публиковать", callback_data: `of:bc:${offer.id}` }]);
+    rows.push([{ text: BT.buttons.doNotPublish, callback_data: `of:bc:${offer.id}` }]);
   } else if (offer.status === "scheduled") {
-    rows.push([{ text: "🚫 Отказаться", callback_data: `of:bc:${offer.id}` }]);
+    rows.push([{ text: BT.buttons.cancelScheduled, callback_data: `of:bc:${offer.id}` }]);
   }
 
   return rows.length ? { inline_keyboard: rows } : null;
@@ -1266,114 +1232,60 @@ function offerSummaryText(offer) {
   const uiState = getOfferUiState(offer);
   const channelLabel = offerChannelLabel(offer);
   const whenText = formatDateTimeHumanRu(offer.scheduledAt);
+  const erid = offer.eridTag || `demo-${offer.id}`;
+  const cpmArgs = { channelLabel, whenText, cpv: offer.cpv, income: offer.estimatedIncome };
 
   if (uiState === "pick_time") {
-    return [
-      `Подберите другое время для поста в канале ${channelLabel}`,
-      "",
-      `Текущее время: ${whenText}`,
-      `CPM: ${offer.cpv} рублей, прогноз дохода ${offer.estimatedIncome} рублей`,
-      "",
-      "Выберите слот ниже или нажмите «Назад»."
-    ].join("\n");
+    return BT.offer.summary.pickTime(cpmArgs);
   }
 
   if (offer.status === "pending_precheck") {
-    return [
-      "В вашем канале запланирован пост с оплатой за просмотры:",
-      "",
-      `Время: ${whenText}`,
-      `CPM: ${offer.cpv} рублей, прогноз дохода ${offer.estimatedIncome} рублей`
-    ].join("\n");
+    return BT.offer.summary.precheck(cpmArgs);
   }
 
   if (offer.status === "pending_approval") {
-    return [
-      `Подтвердите размещение поста в канале ${channelLabel}`,
-      "",
-      `Время: ${whenText}`,
-      `CPM: ${offer.cpv} рублей, прогноз дохода ${offer.estimatedIncome} рублей`,
-      "",
-      "Подтвердите пост, чтобы не упустить свой доход!"
-    ].join("\n");
+    return BT.offer.summary.approval(cpmArgs);
   }
 
   if (offer.status === "pending_manual_posting") {
-    return [
-      `Предложение публикации в канале ${channelLabel}`,
-      "",
-      `Время: ${whenText}`,
-      `CPM: ${offer.cpv} рублей, прогноз дохода ${offer.estimatedIncome} рублей`,
-      "",
-      "Если вы хотите взять это размещение в работу, нажмите «Получить ERID»."
-    ].join("\n");
+    return BT.offer.summary.manualPending(cpmArgs);
   }
 
   if (offer.status === "manual_waiting_publication") {
-    return [
-      `Ожидаем публикацию в канале ${channelLabel}`,
-      "",
-      `Время: ${whenText}`,
-      `CPM: ${offer.cpv} рублей, прогноз дохода ${offer.estimatedIncome} рублей`,
-      `ERID: ${offer.eridTag || `demo-${offer.id}`}`
-    ].join("\n");
+    return BT.offer.summary.manualWaiting({ ...cpmArgs, erid });
   }
 
   if (offer.status === "manual_queued_publication") {
-    return [
-      `Пост добавлен в очередь публикации в канале ${channelLabel}`,
-      "",
-      `Время: ${whenText}`,
-      `CPM: ${offer.cpv} рублей, прогноз дохода ${offer.estimatedIncome} рублей`,
-      `ERID: ${offer.eridTag || `demo-${offer.id}`}`,
-      "Спасибо, ждём выхода публикации."
-    ].join("\n");
+    return BT.offer.summary.manualQueued({ ...cpmArgs, erid });
   }
 
   if (offer.status === "manual_publication_found") {
-    return [
-      `Публикация в канале ${channelLabel} найдена`,
-      "",
-      `Время: ${whenText}`,
-      `CPM: ${offer.cpv} рублей, прогноз дохода ${offer.estimatedIncome} рублей`,
-      `ERID: ${offer.eridTag || `demo-${offer.id}`}`,
-      `Ожидаем ${manualHoldDurationText()} до начисления.`
-    ].join("\n");
+    return BT.offer.summary.manualFound({ ...cpmArgs, erid, holdText: manualHoldDurationText() });
   }
 
-  const lines = [];
-  lines.push(`Оффер #${offer.id}`);
-  lines.push(`Блогер: @${offer.bloggerUsername || "unknown"}`);
-  lines.push(`Режим: ${modeTitle(offer.modeAtCreation)}`);
-  lines.push(`Статус: ${statusTitle(offer.status)}`);
-  lines.push(`Время выхода: ${formatDateTime(offer.scheduledAt)}`);
-  lines.push(`CPV: ${offer.cpv} ₽`);
-  lines.push(`Оценка дохода: ${offer.estimatedIncome} ₽`);
-  lines.push("Текст (без ERID):");
-  lines.push(offer.textRaw);
-
-  if (offer.status === "pending_precheck") {
-    lines.push(`Если не отклоните до ${formatDateTime(offer.decisionDeadlineAt || Date.now())}, пост выйдет автоматически.`);
-  }
-  if (offer.status === "pending_approval") {
-    lines.push("Пост выйдет только после подтверждения.");
-  }
-  if (offer.status === "pending_manual_posting") {
-    lines.push("После принятия пришлю промаркированный текст для ручной публикации.");
-  }
-
-  return lines.join("\n");
+  return BT.offer.summary.genericCard({
+    id: offer.id,
+    bloggerUsername: offer.bloggerUsername,
+    modeTitle: modeTitle(offer.modeAtCreation),
+    statusTitle: statusTitle(offer.status),
+    slotText: formatDateTime(offer.scheduledAt),
+    cpv: offer.cpv,
+    income: offer.estimatedIncome,
+    textRaw: offer.textRaw,
+    decisionDeadlineText: formatDateTime(offer.decisionDeadlineAt || Date.now()),
+    status: offer.status
+  });
 }
 
 function buildManualPendingReminderText(offer, isLastReminder) {
   const lines = [
-    `Оффер #${offer.id}: размещение в запланированное время не состоялось, но оффер всё ещё активен.`,
-    "Вы можете выбрать другой слот в доступном периоде или получить ERID и опубликовать вручную."
+    BT.offer.reminders.pendingManualHeader(offer.id),
+    BT.offer.reminders.pendingManualBody
   ];
   if (isLastReminder) {
     lines.push("");
-    lines.push("Это последнее напоминание по этому офферу.");
-    lines.push("Далее оффер останется активным до конца доступного периода без дополнительных уведомлений.");
+    lines.push(BT.offer.reminders.pendingManualLastTitle);
+    lines.push(BT.offer.reminders.pendingManualLastBody);
   }
   return lines.join("\n");
 }
@@ -1381,9 +1293,9 @@ function buildManualPendingReminderText(offer, isLastReminder) {
 function buildManualPendingReminderKeyboard(offer) {
   return {
     inline_keyboard: [
-      [{ text: "🕒 Выбрать другое время", callback_data: `of:tm:${offer.id}` }],
-      [{ text: "🏷 Получить ERID", callback_data: `of:me:${offer.id}` }],
-      [{ text: "❌ Отклонить", callback_data: `of:dr:${offer.id}` }]
+      [{ text: BT.buttons.pickTime, callback_data: `of:tm:${offer.id}` }],
+      [{ text: BT.buttons.getErid, callback_data: `of:me:${offer.id}` }],
+      [{ text: BT.buttons.decline, callback_data: `of:dr:${offer.id}` }]
     ]
   };
 }
@@ -1536,7 +1448,7 @@ async function declineOfferByBlogger(offer) {
   db.offers[String(offer.id)] = offer;
   saveDb(db);
   await upsertOfferMessage(offer);
-  await sendBotMessage(offer.chatId, `Оффер #${offer.id} отклонён.`);
+  await sendBotMessage(offer.chatId, BT.offer.flow.declined(offer.id));
 }
 
 async function cancelOfferByBlogger(offer) {
@@ -1546,7 +1458,7 @@ async function cancelOfferByBlogger(offer) {
   db.offers[String(offer.id)] = offer;
   saveDb(db);
   await upsertOfferMessage(offer);
-  await sendBotMessage(offer.chatId, `Публикация по офферу #${offer.id} отменена.`);
+  await sendBotMessage(offer.chatId, BT.offer.flow.cancelledByBlogger(offer.id));
 }
 
 async function cancelOfferByAdvertiser(offer) {
@@ -1557,7 +1469,7 @@ async function cancelOfferByAdvertiser(offer) {
   saveDb(db);
   await upsertOfferMessage(offer);
   if (offer.modeAtCreation !== "auto") {
-    await sendBotMessage(offer.chatId, `Рекламодатель отменил оффер #${offer.id}. Публикация не состоится.`);
+    await sendBotMessage(offer.chatId, BT.offer.flow.cancelledByAdvertiser(offer.id));
   }
 }
 
@@ -1569,8 +1481,8 @@ async function acceptManualPostingOffer(offer) {
   saveDb(db);
   await upsertOfferMessage(offer);
   await sendBotMessage(offer.chatId, [
-    `Оффер #${offer.id} принят для ручной публикации.`,
-    "Промаркированный текст:",
+    BT.offer.flow.acceptedManual(offer.id),
+    BT.offer.flow.markedTextLabel,
     offer.textMarked
   ].join("\n"));
 }
@@ -1617,7 +1529,7 @@ async function processOfferDeadlines() {
     const now = Date.now();
     for (const offer of listOffers()) {
       if (offer.status === "pending_precheck" && now >= Number(offer.decisionDeadlineAt || 0)) {
-        await approveOffer(offer, `Оффер #${offer.id} автоматически подтверждён: до дедлайна не было отклонения.`);
+        await approveOffer(offer, BT.offer.flow.autoApproved(offer.id));
         continue;
       }
 
@@ -1628,7 +1540,7 @@ async function processOfferDeadlines() {
         db.offers[String(offer.id)] = offer;
         saveDb(db);
         upsertOfferMessage(offer).catch(() => {});
-        sendBotMessage(offer.chatId, `Оффер #${offer.id} не подтверждён вовремя. Публикация перенесена в архив.`).catch(() => {});
+        sendBotMessage(offer.chatId, BT.offer.flow.approvalExpired(offer.id)).catch(() => {});
         continue;
       }
 
@@ -1643,7 +1555,7 @@ async function processOfferDeadlines() {
           upsertOfferMessage(offer).catch(() => {});
           sendBotMessage(
             offer.chatId,
-            `Оффер #${offer.id}: срок размещения завершился, публикация не выполнена. Оффер перенесён в архив.`
+            BT.offer.flow.manualWindowExpired(offer.id)
           ).catch(() => {});
           continue;
         }
@@ -1658,7 +1570,7 @@ async function processOfferDeadlines() {
           upsertOfferMessage(offer).catch(() => {});
           sendBotMessage(
             offer.chatId,
-            `Оффер #${offer.id}: в доступном периоде больше нет свободных слотов. Оффер перенесён в архив.`
+            BT.offer.flow.noSlotsLeft(offer.id)
           ).catch(() => {});
           continue;
         }
@@ -1694,7 +1606,7 @@ async function processOfferDeadlines() {
         db.offers[String(offer.id)] = offer;
         saveDb(db);
         upsertOfferMessage(offer).catch(() => {});
-        sendBotMessage(offer.chatId, `Оффер #${offer.id}: мы не нашли публикацию с ERID до времени выхода. Публикация перенесена в архив.`).catch(() => {});
+        sendBotMessage(offer.chatId, BT.offer.flow.eridNotFoundByTime(offer.id)).catch(() => {});
         continue;
       }
 
@@ -1712,7 +1624,7 @@ async function processOfferDeadlines() {
             db.offers[String(offer.id)] = offer;
             saveDb(db);
             upsertOfferMessage(offer).catch(() => {});
-            sendBotMessage(offer.chatId, `Оффер #${offer.id} опубликован автоматически в канале.`).catch(() => {});
+            sendBotMessage(offer.chatId, BT.offer.flow.autoPublished(offer.id)).catch(() => {});
           } else {
             offer.status = "auto_publish_error";
             offer.uiState = "main";
@@ -1721,7 +1633,7 @@ async function processOfferDeadlines() {
             upsertOfferMessage(offer).catch(() => {});
             sendBotMessage(
               offer.chatId,
-              `Оффер #${offer.id}: автопубликация не выполнена из-за ошибки. Публикация перенесена в архив.`
+              BT.offer.flow.autoPublishError(offer.id)
             ).catch(() => {});
           }
         } else if (offer.modeAtCreation === "manual_posting") {
@@ -1732,7 +1644,7 @@ async function processOfferDeadlines() {
           upsertOfferMessage(offer).catch(() => {});
           sendBotMessage(
             offer.chatId,
-            `Оффер #${offer.id}: ручная публикация не подтверждена в срок. Публикация перенесена в архив.`
+            BT.offer.flow.manualNotConfirmedInTime(offer.id)
           ).catch(() => {});
         }
         continue;
@@ -1746,7 +1658,7 @@ async function processOfferDeadlines() {
           db.offers[String(offer.id)] = offer;
           saveDb(db);
           upsertOfferMessage(offer).catch(() => {});
-          sendBotMessage(offer.chatId, "Деньги за публикацию начислены, теперь её можно удалить.").catch(() => {});
+          sendBotMessage(offer.chatId, BT.offer.flow.rewardReceived).catch(() => {});
         }
       }
     }
@@ -1786,7 +1698,7 @@ async function processAutoPauseExpirations() {
     if (chatId) {
       await sendBotMessage(
         chatId,
-        "Пауза завершена, публикации снова активны.",
+        BT.autoPause.expired,
         buildPauseKeyboard(channel, false),
         { replyToMessageId }
       );
@@ -1801,18 +1713,18 @@ async function handleStartMessage(message) {
   const payload = parseStartPayload(message?.text);
 
   if (!payload) {
-    await sendBotMessage(chatId, "Откройте ссылку авторизации из веб-интерфейса и нажмите Start ещё раз.");
+    await sendBotMessage(chatId, BT.start.needAuthLink);
     return;
   }
 
   markExpiredSessions();
   const session = getSessionByToken(payload);
   if (!session) {
-    await sendBotMessage(chatId, "Ссылка авторизации не найдена. Запросите новую в интерфейсе.");
+    await sendBotMessage(chatId, BT.start.linkNotFound);
     return;
   }
   if (session.status === "expired") {
-    await sendBotMessage(chatId, "Сессия авторизации истекла. Запросите новую ссылку.");
+    await sendBotMessage(chatId, BT.start.sessionExpired);
     return;
   }
 
@@ -1820,7 +1732,7 @@ async function handleStartMessage(message) {
   const tgUsername = message?.from?.username || null;
   const blogger = upsertBlogger(tgUserId, tgUsername, chatId);
   if (!blogger) {
-    await sendBotMessage(chatId, "Не удалось зафиксировать пользователя.");
+    await sendBotMessage(chatId, BT.start.userSaveFailed);
     return;
   }
 
@@ -1837,14 +1749,14 @@ async function handleStartMessage(message) {
 
   const sent = await sendBotMessage(
     chatId,
-    "Авторизация успешна. Теперь выберите канал, где вы админ:",
+    BT.start.successChooseChannel,
     buildChannelRequestKeyboard()
   );
 
   if (!sent) {
     await sendBotMessage(
       chatId,
-      "Не удалось отправить кнопку выбора канала. Отправьте /start еще раз."
+      BT.start.chooseChannelButtonFailed
     );
   }
 }
@@ -1857,23 +1769,23 @@ async function handleChatSharedMessage(message) {
   const messageTs = Number(message?.date || 0) * 1000;
 
   if (!fromId || !channelChatId) {
-    await sendBotMessage(privateChatId, "Не удалось обработать выбранный канал.");
+    await sendBotMessage(privateChatId, BT.channelSelection.processFailed);
     return;
   }
 
   const awaitingSession = getLatestAwaitingSessionForUser(fromId);
   if (!awaitingSession) {
-    await sendBotMessage(privateChatId, "Сессия выбора канала не активна. Откройте ссылку авторизации и отправьте /start еще раз.");
+    await sendBotMessage(privateChatId, BT.channelSelection.sessionNotActive);
     return;
   }
   if (Number.isFinite(messageTs) && messageTs > 0 && messageTs + 2000 < Number(awaitingSession.createdAt || 0)) {
-    await sendBotMessage(privateChatId, "Это устаревший выбор канала. Отправьте /start еще раз и повторите выбор.");
+    await sendBotMessage(privateChatId, BT.channelSelection.staleSelection);
     return;
   }
 
   const blogger = getBloggerById(fromId);
   if (!blogger) {
-    await sendBotMessage(privateChatId, "Сначала пройдите /start по ссылке из веба.");
+    await sendBotMessage(privateChatId, BT.channelSelection.needStartFromWeb);
     return;
   }
 
@@ -1893,18 +1805,14 @@ async function handleChatSharedMessage(message) {
   if (!channel.botConnected) {
     await sendBotMessage(
       privateChatId,
-      [
-        `Канал подтверждён.`,
-        `Добавьте бота @${botState.username || "bot"} в канал как администратора с правом публикации сообщений.`,
-        "После этого возвращайтесь в личный кабинет и настройте график публикаций."
-      ].join("\n"),
+      BT.channelSelection.addBotAndReturn(botState.username),
       removeKeyboardMarkup()
     );
     return;
   } else {
     await sendBotMessage(
       privateChatId,
-      "Отлично, бот уже подключен к каналу. Настройка завершена, можете возвращаться в личный кабинет.",
+      BT.channelSelection.readyAndConnected,
       removeKeyboardMarkup()
     );
     return;
@@ -1915,7 +1823,7 @@ function buildModeChooserPayload(blogger, selectedChannelId) {
   const channels = listChannelsForBlogger(blogger?.id);
   if (!channels.length) {
     return {
-      text: "Сначала выберите канал через /start.",
+      text: BT.start.mustChooseChannelFirst,
       keyboard: null,
       parseMode: null
     };
@@ -1923,7 +1831,7 @@ function buildModeChooserPayload(blogger, selectedChannelId) {
 
   const multi = channels.length > 1;
   if (!selectedChannelId && multi) {
-    const lines = ["Выберите канал для настройки режима:", "", "<b>Статусы каналов:</b>"];
+    const lines = [BT.chooser.chooseChannelForMode, "", BT.chooser.statusesTitle];
     for (const channel of channels) lines.push(channelModeStatusLine(channel));
     return {
       text: lines.join("\n"),
@@ -1937,7 +1845,7 @@ function buildModeChooserPayload(blogger, selectedChannelId) {
     : channels[0];
   if (!selected) {
     return {
-      text: "Канал не найден. Выберите канал заново.",
+      text: BT.chooser.channelNotFoundChooseAgain,
       keyboard: buildChannelPickerKeyboard("mode", channels),
       parseMode: null
     };
@@ -1954,7 +1862,7 @@ function buildPauseChooserPayload(blogger, selectedChannelId) {
   const channels = listChannelsForBlogger(blogger?.id);
   if (!channels.length) {
     return {
-      text: "Сначала выберите канал через /start.",
+      text: BT.start.mustChooseChannelFirst,
       keyboard: null,
       parseMode: null
     };
@@ -1962,7 +1870,7 @@ function buildPauseChooserPayload(blogger, selectedChannelId) {
 
   const multi = channels.length > 1;
   if (!selectedChannelId && multi) {
-    const lines = ["Выберите канал для управления паузой:", "", "<b>Статусы каналов:</b>"];
+    const lines = [BT.chooser.chooseChannelForPause, "", BT.chooser.statusesTitle];
     for (const channel of channels) lines.push(channelPauseStatusLine(channel));
     return {
       text: lines.join("\n"),
@@ -1976,7 +1884,7 @@ function buildPauseChooserPayload(blogger, selectedChannelId) {
     : channels[0];
   if (!selected) {
     return {
-      text: "Канал не найден. Выберите канал заново.",
+      text: BT.chooser.channelNotFoundChooseAgain,
       keyboard: buildChannelPickerKeyboard("pause", channels),
       parseMode: null
     };
@@ -1984,28 +1892,28 @@ function buildPauseChooserPayload(blogger, selectedChannelId) {
 
   if (!modeSupportsPause(selected.postingMode)) {
     const lines = [
-      `<b>Канал:</b> ${channelLabel(selected)}`,
-      `Режим: ${modeTitle(selected.postingMode)}`,
-      "Пауза доступна в режимах «Авто», «Предпросмотр» и «Подтверждение»."
+      BT.mode.panel.channelForPanel(channelLabel(selected)),
+      BT.callback.modeSet(modeTitle(selected.postingMode)),
+      BT.chooser.pauseModeHint
     ];
     if (multi) {
-      lines.push("", "<b>Статусы каналов:</b>");
+      lines.push("", BT.chooser.statusesTitle);
       for (const channel of channels) lines.push(channelPauseStatusLine(channel));
     }
     return {
       text: lines.join("\n"),
-      keyboard: multi ? { inline_keyboard: [[{ text: "⬅ Каналы", callback_data: "pause:list" }]] } : null,
+      keyboard: multi ? { inline_keyboard: [[{ text: BT.buttons.backChannels, callback_data: "pause:list" }]] } : null,
       parseMode: "HTML"
     };
   }
 
   if (isChannelAutoPaused(selected)) {
     const lines = [
-      `<b>Канал:</b> ${channelLabel(selected)}`,
-      `⏸ Пауза установлена до ${formatDateTimeHumanRu(selected.autoPausedUntilAt)}.`
+      BT.mode.panel.channelForPanel(channelLabel(selected)),
+      BT.chooser.pauseActiveLine(formatDateTimeHumanRu(selected.autoPausedUntilAt))
     ];
     if (multi) {
-      lines.push("", "<b>Статусы каналов:</b>");
+      lines.push("", BT.chooser.statusesTitle);
       for (const channel of channels) lines.push(channelPauseStatusLine(channel));
     }
     return {
@@ -2016,11 +1924,11 @@ function buildPauseChooserPayload(blogger, selectedChannelId) {
   }
 
   const lines = [
-    `<b>Канал:</b> ${channelLabel(selected)}`,
-    "Автопубликации активны. Если нужно, включите паузу на 24 часа."
+    BT.mode.panel.channelForPanel(channelLabel(selected)),
+    BT.chooser.pauseActiveGeneric
   ];
   if (multi) {
-    lines.push("", "<b>Статусы каналов:</b>");
+    lines.push("", BT.chooser.statusesTitle);
     for (const channel of channels) lines.push(channelPauseStatusLine(channel));
   }
   return {
@@ -2032,7 +1940,7 @@ function buildPauseChooserPayload(blogger, selectedChannelId) {
 
 async function sendModeChooser(chatId, blogger) {
   if (!blogger) {
-    await sendBotMessage(chatId, "Сначала авторизуйтесь через /start и выберите канал.");
+    await sendBotMessage(chatId, BT.start.mustAuthAndChooseChannel);
     return;
   }
   const payload = buildModeChooserPayload(blogger, null);
@@ -2045,13 +1953,13 @@ async function handleModeCallback(query, actionData) {
   const fromId = String(query?.from?.id || "").trim();
   const blogger = getBloggerById(fromId);
   if (!blogger) {
-    await answerCallbackQuery(query.id, "Сначала авторизуйтесь через /start");
+    await answerCallbackQuery(query.id, BT.callback.authFirst);
     return;
   }
 
   const channels = listChannelsForBlogger(blogger.id);
   if (!channels.length) {
-    await answerCallbackQuery(query.id, "Сначала выберите канал");
+    await answerCallbackQuery(query.id, BT.callback.channelFirst);
     return;
   }
 
@@ -2095,7 +2003,7 @@ async function handleModeCallback(query, actionData) {
     channel.updatedAt = Date.now();
     db.channels[channel.id] = channel;
     saveDb(db);
-    await answerCallbackQuery(query.id, `Режим: ${modeTitle(channel.postingMode)}`);
+    await answerCallbackQuery(query.id, BT.callback.modeSet(modeTitle(channel.postingMode)));
     await renderPanel(channel.id);
     return;
   }
@@ -2104,7 +2012,7 @@ async function handleModeCallback(query, actionData) {
     const [, channelId, modeRaw] = action.split(":");
     const channel = channels.find((item) => String(item.id) === String(channelId || ""));
     if (!channel) {
-      await answerCallbackQuery(query.id, "Канал не найден");
+      await answerCallbackQuery(query.id, BT.callback.channelNotFound);
       return;
     }
     const mode = normalizeMode(modeRaw);
@@ -2116,17 +2024,17 @@ async function handleModeCallback(query, actionData) {
     channel.updatedAt = Date.now();
     db.channels[channel.id] = channel;
     saveDb(db);
-    await answerCallbackQuery(query.id, `${channelLabel(channel)}: ${modeTitle(channel.postingMode)}`);
+    await answerCallbackQuery(query.id, BT.callback.channelModeSet(channelLabel(channel), modeTitle(channel.postingMode)));
     await renderPanel(channel.id);
     return;
   }
 
-  await answerCallbackQuery(query.id, "Неизвестное действие");
+  await answerCallbackQuery(query.id, BT.callback.unknownAction);
 }
 
 async function sendPauseChooser(chatId, blogger) {
   if (!blogger) {
-    await sendBotMessage(chatId, "Сначала авторизуйтесь через /start и выберите канал.");
+    await sendBotMessage(chatId, BT.start.mustAuthAndChooseChannel);
     return;
   }
   const payload = buildPauseChooserPayload(blogger, null);
@@ -2138,13 +2046,13 @@ async function sendPauseChooser(chatId, blogger) {
 async function handlePauseCallback(query, actionData) {
   const blogger = getBloggerById(String(query?.from?.id || ""));
   if (!blogger) {
-    await answerCallbackQuery(query.id, "Сначала авторизуйтесь через /start");
+    await answerCallbackQuery(query.id, BT.callback.authFirst);
     return;
   }
 
   const channels = listChannelsForBlogger(blogger.id);
   if (!channels.length) {
-    await answerCallbackQuery(query.id, "Сначала выберите канал");
+    await answerCallbackQuery(query.id, BT.callback.channelFirst);
     return;
   }
 
@@ -2190,19 +2098,19 @@ async function handlePauseCallback(query, actionData) {
   }
 
   if (!channel || (pauseAction !== "24h" && pauseAction !== "resume")) {
-    await answerCallbackQuery(query.id, "Неизвестное действие");
+    await answerCallbackQuery(query.id, BT.callback.unknownAction);
     return;
   }
 
   if (!modeSupportsPause(channel.postingMode)) {
-    await answerCallbackQuery(query.id, "Пауза доступна только в режимах автопубликации");
+    await answerCallbackQuery(query.id, BT.callback.pauseOnlyAutoModes);
     await renderPanel(channel.id);
     return;
   }
 
   if (pauseAction === "resume") {
     if (!isChannelAutoPaused(channel)) {
-      await answerCallbackQuery(query.id, "Пауза не активна");
+      await answerCallbackQuery(query.id, BT.callback.pauseNotActive);
       await renderPanel(channel.id);
       return;
     }
@@ -2210,13 +2118,13 @@ async function handlePauseCallback(query, actionData) {
     channel.autoPauseMessageId = null;
     db.channels[channel.id] = channel;
     saveDb(db);
-    await answerCallbackQuery(query.id, `${channelLabel(channel)}: публикации снова активны`);
+    await answerCallbackQuery(query.id, BT.callback.channelResumed(channelLabel(channel)));
     await renderPanel(channel.id);
     return;
   }
 
   if (isChannelAutoPaused(channel)) {
-    await answerCallbackQuery(query.id, "Пауза уже включена");
+    await answerCallbackQuery(query.id, BT.callback.pauseAlreadyEnabled);
     await renderPanel(channel.id);
     return;
   }
@@ -2230,7 +2138,7 @@ async function handlePauseCallback(query, actionData) {
 
   db.channels[channel.id] = channel;
   saveDb(db);
-  await answerCallbackQuery(query.id, `${channelLabel(channel)}: пауза до ${formatDateTimeHumanRu(channel.autoPausedUntilAt)}`);
+  await answerCallbackQuery(query.id, BT.callback.channelPausedUntil(channelLabel(channel), formatDateTimeHumanRu(channel.autoPausedUntilAt)));
   await renderPanel(channel.id);
 }
 
@@ -2246,19 +2154,19 @@ function parseOfferCallback(data) {
 
 async function handleOfferCallback(query, parsed) {
   if (!parsed || !Number.isInteger(parsed.offerId)) {
-    await answerCallbackQuery(query.id, "Некорректное действие");
+    await answerCallbackQuery(query.id, BT.callback.invalidOfferAction);
     return;
   }
 
   const offer = db.offers[String(parsed.offerId)];
   if (!offer) {
-    await answerCallbackQuery(query.id, "Оффер не найден");
+    await answerCallbackQuery(query.id, BT.callback.offerNotFound);
     return;
   }
 
   const queryChatId = Number(query?.message?.chat?.id || 0);
   if (offer.chatId && queryChatId && Number(offer.chatId) !== queryChatId) {
-    await answerCallbackQuery(query.id, "Этот оффер не для вас");
+    await answerCallbackQuery(query.id, BT.callback.offerNotYours);
     return;
   }
 
@@ -2275,7 +2183,7 @@ async function handleOfferCallback(query, parsed) {
   if (parsed.action === "ps") {
     const slotTs = Number(parsed.arg || 0);
     const ok = await rescheduleOffer(offer, slotTs);
-    await answerCallbackQuery(query.id, ok ? "Время обновлено" : "Слот недоступен");
+    await answerCallbackQuery(query.id, ok ? BT.callback.slotUpdated : BT.callback.slotUnavailable);
     return;
   }
 
@@ -2288,7 +2196,7 @@ async function handleOfferCallback(query, parsed) {
     db.offers[String(offer.id)] = offer;
     saveDb(db);
     await upsertOfferMessage(offer);
-    await answerCallbackQuery(query.id, "Выберите слот");
+    await answerCallbackQuery(query.id, BT.callback.chooseSlot);
     return;
   }
 
@@ -2311,17 +2219,17 @@ async function handleOfferCallback(query, parsed) {
       return;
     }
     await declineOfferByBlogger(offer);
-    await answerCallbackQuery(query.id, "Отклонено");
+    await answerCallbackQuery(query.id, BT.callback.declined);
     return;
   }
 
   if (parsed.action === "rb") {
-    await answerCallbackQuery(query.id, "Шаг больше не используется");
+    await answerCallbackQuery(query.id, BT.callback.deprecatedStep);
     return;
   }
 
   if (parsed.action === "rr") {
-    await answerCallbackQuery(query.id, "Шаг больше не используется");
+    await answerCallbackQuery(query.id, BT.callback.deprecatedStep);
     return;
   }
 
@@ -2330,8 +2238,8 @@ async function handleOfferCallback(query, parsed) {
       await answerCallbackQuery(query.id, offerProcessedCallbackText(offer));
       return;
     }
-    await approveOffer(offer, `Оффер #${offer.id} подтверждён.`);
-    await answerCallbackQuery(query.id, "Подтверждено");
+    await approveOffer(offer, BT.offer.flow.approved(offer.id));
+    await answerCallbackQuery(query.id, BT.callback.approved);
     return;
   }
 
@@ -2348,14 +2256,14 @@ async function handleOfferCallback(query, parsed) {
     await sendBotMessage(
       offer.chatId,
       [
-        `ERID для оффера #${offer.id}: ${offer.eridTag || `demo-${offer.id}`}`,
-        "Публикация будет засчитана, когда мы увидим в канале размещение с этим ERID.",
+        BT.offer.flow.eridInfo(offer.id, offer.eridTag || `demo-${offer.id}`),
+        BT.offer.flow.eridRule,
         "",
-        "Текст для публикации:",
+        BT.offer.flow.textForPublication,
         offer.textMarked
       ].join("\n")
     );
-    await answerCallbackQuery(query.id, "ERID отправлен");
+    await answerCallbackQuery(query.id, BT.callback.eridSent);
     return;
   }
 
@@ -2369,8 +2277,8 @@ async function handleOfferCallback(query, parsed) {
     db.offers[String(offer.id)] = offer;
     saveDb(db);
     await upsertOfferMessage(offer);
-    await sendBotMessage(offer.chatId, "Спасибо, ждём выхода публикации.");
-    await answerCallbackQuery(query.id, "Отметили");
+    await sendBotMessage(offer.chatId, BT.offer.flow.queuedThanks);
+    await answerCallbackQuery(query.id, BT.callback.marked);
     return;
   }
 
@@ -2380,7 +2288,7 @@ async function handleOfferCallback(query, parsed) {
       return;
     }
     await acceptManualPostingOffer(offer);
-    await answerCallbackQuery(query.id, "Принято");
+    await answerCallbackQuery(query.id, BT.callback.accepted);
     return;
   }
 
@@ -2390,11 +2298,11 @@ async function handleOfferCallback(query, parsed) {
       return;
     }
     await cancelOfferByBlogger(offer);
-    await answerCallbackQuery(query.id, "Отменено");
+    await answerCallbackQuery(query.id, BT.callback.cancelled);
     return;
   }
 
-  await answerCallbackQuery(query.id, "Неизвестное действие");
+  await answerCallbackQuery(query.id, BT.callback.unknownAction);
 }
 
 function extractChannelPostText(post) {
@@ -2435,7 +2343,7 @@ async function handleChannelPostUpdate(post) {
     await upsertOfferMessage(offer);
     await sendBotMessage(
       offer.chatId,
-      `Публикация найдена. Она должна провисеть минимум ${manualHoldDurationText()}, чтобы было начислено вознаграждение.`
+      BT.offer.flow.publicationFound(manualHoldDurationText())
     );
   }
 }
