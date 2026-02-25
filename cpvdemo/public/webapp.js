@@ -11,15 +11,24 @@ const els = {
   pauseHint: document.getElementById("waPauseHint"),
   scheduleHint: document.getElementById("waScheduleHint"),
   pauseSheet: document.getElementById("waPauseSheet"),
+  slotSheet: document.getElementById("waSlotSheet"),
+  slotDateInput: document.getElementById("waSlotDateInput"),
+  slotList: document.getElementById("waSlotList"),
+  slotApplyBtn: document.getElementById("waSlotApplyBtn"),
   offers: document.getElementById("waOffers"),
-  filterUpcoming: document.getElementById("waFilterUpcoming"),
+  filterNew: document.getElementById("waFilterNew"),
+  filterScheduled: document.getElementById("waFilterScheduled"),
   filterPublished: document.getElementById("waFilterPublished"),
   filterFailed: document.getElementById("waFilterFailed"),
   filterAll: document.getElementById("waFilterAll")
 };
 let currentState = null;
-let currentFilter = "upcoming";
+let currentFilter = "new";
 let currentChannelId = "";
+let slotPickerOfferId = 0;
+let slotPickerPages = [];
+let slotPickerDateKey = "";
+let selectedSlotTs = 0;
 
 function setText(node, value) {
   if (!node) return;
@@ -79,10 +88,11 @@ function renderList(root, items, emptyText) {
       `<div class="planned-meta">CPV ${item.cpv} ₽ · доход ${item.estimatedIncome} ₽</div>` +
       `<div class="planned-meta pp-waOfferText">${text}</div>` +
       `<div class="pp-waActions">` +
-      (item.canApprove ? `<button class="pp-waAction success" data-offer-action="approve" data-offer-id="${item.id}">Подтвердить</button>` : "") +
+      (item.canPublishNow ? `<button class="pp-waAction success" data-offer-action="publish_now" data-offer-id="${item.id}">Опубликовать сейчас</button>` : "") +
       (item.canDecline ? `<button class="pp-waAction danger" data-offer-action="decline" data-offer-id="${item.id}">Отклонить</button>` : "") +
-      (item.canPickTime ? `<button class="pp-waAction primary" data-offer-action="pick_time" data-offer-id="${item.id}">Выбрать время</button>` : "") +
+      (item.canPickTime ? `<button class="pp-waAction ${(item.status === "pending_approval") ? "success" : "primary"}" data-offer-action="pick_time" data-offer-id="${item.id}">${item.status === "pending_approval" ? "Взять в работу" : "Изменить время"}</button>` : "") +
       (item.canCancelScheduled ? `<button class="pp-waAction danger" data-offer-action="cancel_scheduled" data-offer-id="${item.id}">Отказаться</button>` : "") +
+      (item.canRestore ? `<button class="pp-waAction primary" data-offer-action="restore_cancelled" data-offer-id="${item.id}">Вернуть в работу</button>` : "") +
       `</div>` +
       `</div>`;
     root.appendChild(card);
@@ -91,7 +101,8 @@ function renderList(root, items, emptyText) {
 
 function setFilter(filterName) {
   currentFilter = filterName;
-  if (els.filterUpcoming) els.filterUpcoming.classList.toggle("active", filterName === "upcoming");
+  if (els.filterNew) els.filterNew.classList.toggle("active", filterName === "new");
+  if (els.filterScheduled) els.filterScheduled.classList.toggle("active", filterName === "scheduled");
   if (els.filterPublished) els.filterPublished.classList.toggle("active", filterName === "published");
   if (els.filterFailed) els.filterFailed.classList.toggle("active", filterName === "failed");
   if (els.filterAll) els.filterAll.classList.toggle("active", filterName === "all");
@@ -100,10 +111,24 @@ function setFilter(filterName) {
 
 function renderOffers() {
   const offers = currentState?.offers || {};
+  const mode = String(currentState?.channel?.postingMode || "");
   const upcoming = Array.isArray(offers.upcoming) ? offers.upcoming : [];
+  const newItems = upcoming.filter((item) => item.status === "pending_approval");
+  const scheduled = mode === "auto_with_precheck"
+    ? upcoming.filter((item) => item.status === "pending_precheck" || item.status === "scheduled")
+    : upcoming.filter((item) => item.status === "scheduled");
   const published = Array.isArray(offers.published) ? offers.published : [];
   const failed = Array.isArray(offers.failed) ? offers.failed : [];
-  const all = [...upcoming, ...published, ...failed];
+  const all = [...newItems, ...scheduled, ...published, ...failed];
+
+  if (currentFilter === "new") {
+    renderList(els.offers, newItems, "Пока нет новых размещений.");
+    return;
+  }
+  if (currentFilter === "scheduled") {
+    renderList(els.offers, scheduled, "Пока нет запланированных размещений.");
+    return;
+  }
 
   if (currentFilter === "published") {
     renderList(els.offers, published, "Пока нет успешных размещений.");
@@ -117,7 +142,7 @@ function renderOffers() {
     renderList(els.offers, all, "Пока нет размещений.");
     return;
   }
-  renderList(els.offers, upcoming, "Пока нет предстоящих размещений.");
+  renderList(els.offers, newItems, "Пока нет новых размещений.");
 }
 
 function renderChannelSelect(state) {
@@ -236,7 +261,13 @@ function renderState(state) {
   const isMultiChannel = channels.length >= 2;
   const title = channel?.title || "Канал";
   const username = channel?.username ? `@${channel.username}` : "";
+  const mode = String(channel?.postingMode || "");
   setText(els.channel, username || title);
+  const showNewFilter = mode === "manual_approval";
+  setHidden(els.filterNew, !showNewFilter);
+  if (!showNewFilter && currentFilter === "new") {
+    setFilter("scheduled");
+  }
   if (channel?.weeklyPostLimit && channel?.scheduleSlotsCount) {
     setText(els.scheduleHint, `Лимит ${channel.weeklyPostLimit}/нед · слотов ${channel.scheduleSlotsCount}`);
   } else {
@@ -307,28 +338,82 @@ function flattenSlotsFromPages(pages) {
   return out.filter((item) => Number.isFinite(item.ts) && item.ts > 0);
 }
 
+function toDateInputValue(ts) {
+  const d = new Date(ts);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function renderSlotOptions() {
+  if (!els.slotList) return;
+  const page = slotPickerPages.find((item) => item.dateKey === slotPickerDateKey) || null;
+  const slots = Array.isArray(page?.slots) ? page.slots : [];
+  els.slotList.innerHTML = "";
+  selectedSlotTs = 0;
+  if (!slots.length) {
+    els.slotList.innerHTML = "<p class='muted'>На эту дату нет слотов.</p>";
+    return;
+  }
+  for (const slot of slots) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "pp-slotBtn";
+    button.dataset.slotTs = String(slot?.ts || "");
+    button.textContent = String(slot?.timeLabel || "");
+    if (!selectedSlotTs) {
+      selectedSlotTs = Number(slot?.ts || 0);
+      button.classList.add("active");
+    }
+    els.slotList.appendChild(button);
+  }
+}
+
+function openSlotSheet(offerId, pages) {
+  slotPickerOfferId = Number(offerId);
+  slotPickerPages = Array.isArray(pages) ? pages.filter((item) => Array.isArray(item?.slots) && item.slots.length) : [];
+  if (!slotPickerPages.length || !els.slotDateInput || !els.slotSheet) return false;
+  slotPickerDateKey = String(slotPickerPages[0]?.dateKey || "");
+  const dt = slotPickerPages[0]?.slots?.[0]?.ts || Date.now();
+  els.slotDateInput.value = slotPickerDateKey;
+  els.slotDateInput.min = slotPickerPages[0]?.dateKey || toDateInputValue(dt);
+  const lastPage = slotPickerPages[slotPickerPages.length - 1];
+  els.slotDateInput.max = lastPage?.dateKey || toDateInputValue(dt);
+  renderSlotOptions();
+  els.slotSheet.hidden = false;
+  return true;
+}
+
+function closeSlotSheet() {
+  if (els.slotSheet) els.slotSheet.hidden = true;
+  slotPickerOfferId = 0;
+  slotPickerPages = [];
+  slotPickerDateKey = "";
+  selectedSlotTs = 0;
+}
+
+function handleSlotDateChange() {
+  if (!els.slotDateInput) return;
+  const key = String(els.slotDateInput.value || "");
+  const next = slotPickerPages.find((item) => String(item?.dateKey || "") === key);
+  if (!next) return;
+  slotPickerDateKey = String(next.dateKey || "");
+  renderSlotOptions();
+}
+
 async function handleOfferAction(action, offerId) {
   if (!Number.isInteger(offerId) || offerId <= 0) return;
   const before = els.pauseHint?.textContent || "";
   try {
     if (action === "pick_time") {
       const slotsRes = await apiGet(`/api/webapp/offer-pages?offerId=${offerId}`);
-      const slots = flattenSlotsFromPages(slotsRes?.pages || []).slice(0, 24);
-      if (!slots.length) {
-        setText(els.pauseHint, "Нет доступных слотов для переноса.");
+      const pages = Array.isArray(slotsRes?.pages) ? slotsRes.pages : [];
+      if (!flattenSlotsFromPages(pages).length) {
+      setText(els.pauseHint, "Нет доступных слотов в окне кампании.");
         return;
       }
-      const lines = slots.map((slot, idx) => `${idx + 1}. ${slot.label}`).join("\n");
-      const input = window.prompt(`Введите номер слота:\n${lines}`, "1");
-      if (input == null) return;
-      const index = Number(input) - 1;
-      if (!Number.isInteger(index) || index < 0 || index >= slots.length) {
-        setText(els.pauseHint, "Некорректный номер слота.");
-        return;
-      }
-      await apiPost("/api/webapp/offer-action", { action, offerId, slotTs: slots[index].ts, channelId: currentChannelId || undefined });
-      await loadState();
-      setText(els.pauseHint, "Время публикации обновлено.");
+      openSlotSheet(offerId, pages);
       return;
     }
     await apiPost("/api/webapp/offer-action", { action, offerId, channelId: currentChannelId || undefined });
@@ -366,11 +451,45 @@ async function boot() {
   els.scheduleBtn?.addEventListener("click", () => {
     editSchedule().catch(() => {});
   });
+  els.slotDateInput?.addEventListener("change", handleSlotDateChange);
+  els.slotSheet?.addEventListener("click", (event) => {
+    const close = event.target?.closest?.("[data-slot-close='1']");
+    if (close) closeSlotSheet();
+    const slotButton = event.target?.closest?.("[data-slot-ts]");
+    if (slotButton) {
+      selectedSlotTs = Number(slotButton.dataset.slotTs || 0);
+      const buttons = els.slotList?.querySelectorAll?.("[data-slot-ts]") || [];
+      for (const node of buttons) {
+        node.classList.toggle("active", node === slotButton);
+      }
+    }
+  });
+  els.slotApplyBtn?.addEventListener("click", async () => {
+    const slotTs = Number(selectedSlotTs || 0);
+    if (!slotPickerOfferId || !Number.isFinite(slotTs)) {
+      setText(els.pauseHint, "Выберите слот.");
+      return;
+    }
+    try {
+      await apiPost("/api/webapp/offer-action", {
+        action: "pick_time",
+        offerId: slotPickerOfferId,
+        slotTs,
+        channelId: currentChannelId || undefined
+      });
+      closeSlotSheet();
+      await loadState();
+      setText(els.pauseHint, "Время публикации обновлено.");
+    } catch (err) {
+      setText(els.pauseHint, `Ошибка: ${err?.message || String(err)}`);
+    }
+  });
   els.channelSelect?.addEventListener("change", () => {
     currentChannelId = String(els.channelSelect?.value || "");
     loadState().catch(() => {});
   });
-  els.filterUpcoming?.addEventListener("click", () => setFilter("upcoming"));
+  els.filterNew?.addEventListener("click", () => setFilter("new"));
+  els.filterScheduled?.addEventListener("click", () => setFilter("scheduled"));
   els.filterPublished?.addEventListener("click", () => setFilter("published"));
   els.filterFailed?.addEventListener("click", () => setFilter("failed"));
   els.filterAll?.addEventListener("click", () => setFilter("all"));

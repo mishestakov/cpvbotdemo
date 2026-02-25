@@ -45,10 +45,9 @@ flowchart TB
       P_DECLINED[declined_by_blogger]:::terminal
       P_REWARDED[rewarded]:::success
       P_ERROR[auto_publish_error]:::error
-      P_PENDING -->|Подтвердить| P_SCHEDULED
       P_PENDING -.->|Дедлайн истек| P_SCHEDULED
       P_PENDING -->|Отклонить| P_DECLINED
-      P_PENDING -.->|Выбрать другое время| P_PICK
+      P_PENDING -.->|Изменить время| P_PICK
       P_PICK -->|Слот выбран| P_PENDING
       P_SCHEDULED -.->|Время выхода успех| P_REWARDED
       P_SCHEDULED -.->|Время выхода ошибка| P_ERROR
@@ -63,11 +62,11 @@ flowchart TB
       AP_DECLINED[declined_by_blogger]:::terminal
       AP_REWARDED[rewarded]:::success
       AP_ERROR[auto_publish_error]:::error
-      AP_PENDING -->|Подтвердить| AP_SCHEDULED
+      AP_PENDING -->|Взять в работу| AP_PICK
       AP_PENDING -.->|Время вышло| AP_ARCHIVED
       AP_PENDING -->|Отклонить| AP_DECLINED
-      AP_PENDING -.->|Выбрать другое время| AP_PICK
-      AP_PICK -->|Слот выбран| AP_PENDING
+      AP_PICK -->|Слот выбран| AP_SCHEDULED
+      AP_SCHEDULED -.->|Изменить время| AP_PICK
       AP_SCHEDULED -.->|Время выхода успех| AP_REWARDED
       AP_SCHEDULED -.->|Время выхода ошибка| AP_ERROR
     end

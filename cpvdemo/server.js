@@ -528,10 +528,12 @@ function toOfferDto(offer) {
     text: offer.textRaw,
     channelId: offer.channelId,
     declineReason: offer.bloggerDeclineReason || null,
-    canApprove: canDecide,
+    canApprove: false,
     canDecline: canDecide,
     canPickTime,
     canCancelScheduled: String(status) === "scheduled",
+    canRestore: canRestoreCancelledOffer(offer),
+    canPublishNow: canPublishNow(offer),
     publicationState,
     publicationStateTitle: publicationState === "published" ? "Опубликовано" : publicationState === "not_published" ? "Не опубликовано" : null
   };
@@ -557,7 +559,7 @@ function buildWebAppOfferPages(offer) {
 
 function canWebAppApprove(offer) {
   const status = String(offer?.status || "");
-  return status === "pending_precheck" || status === "pending_approval";
+  return status === "pending_precheck";
 }
 
 function canWebAppDecline(offer) {
@@ -566,6 +568,20 @@ function canWebAppDecline(offer) {
 
 function canWebAppCancelScheduled(offer) {
   return String(offer?.status || "") === "scheduled";
+}
+
+function canRestoreCancelledOffer(offer) {
+  if (String(offer?.status || "") !== "cancelled_by_blogger") return false;
+  return buildOfferDatePages(offer).length > 0;
+}
+
+function canPublishNow(offer, nowTs = Date.now()) {
+  if (!isOfferActive(offer)) return false;
+  const status = String(offer?.status || "");
+  if (status !== "pending_precheck" && status !== "pending_approval" && status !== "scheduled") return false;
+  const channel = getChannelById(offer?.channelId);
+  if (!channel?.botConnected) return false;
+  return canUseDateTimeInOfferRange(offer, nowTs + 2 * 60 * 1000);
 }
 
 function canUseDateTimeInOfferRange(offer, ts) {
@@ -685,6 +701,7 @@ function webAppSnapshotForBlogger(blogger, selectedChannelId) {
       id: item.id,
       title: item.title || "",
       username: item.username || "",
+      postingMode: normalizeMode(item.postingMode),
       postingModeTitle: modeTitle(item.postingMode),
       pauseActive: isChannelAutoPaused(item),
       pauseUntilText: isChannelAutoPaused(item) ? formatDateTimeHumanRu(item.autoPausedUntilAt) : null
@@ -694,6 +711,7 @@ function webAppSnapshotForBlogger(blogger, selectedChannelId) {
       id: channel.id,
       title: channel.title || "",
       username: channel.username || "",
+      postingMode: normalizeMode(channel.postingMode),
       weeklyPostLimit: Number(channel.weeklyPostLimit || 21),
       scheduleSlots: Array.isArray(channel.scheduleSlots) ? channel.scheduleSlots : [],
       scheduleSlotsCount: Array.isArray(channel.scheduleSlots) ? channel.scheduleSlots.length : 0
@@ -1203,7 +1221,7 @@ function offerChannelLabel(offer) {
 }
 
 function buildOfferKeyboard(offer, pageFromCallback) {
-  if (!isOfferActive(offer)) return null;
+  if (!isOfferActive(offer) && !canRestoreCancelledOffer(offer)) return null;
 
   const uiState = getOfferUiState(offer);
   const rows = [];
@@ -1247,17 +1265,24 @@ function buildOfferKeyboard(offer, pageFromCallback) {
   }
 
   if (offer.status === "pending_precheck") {
-    rows.push([{ text: BT.buttons.pickTime, callback_data: `of:tm:${offer.id}`, style: "primary" }]);
+    if (canPublishNow(offer)) {
+      rows.push([{ text: BT.buttons.publishNow, callback_data: `of:bn:${offer.id}` }]);
+    }
+    rows.push([{ text: BT.buttons.changeTime, callback_data: `of:tm:${offer.id}`, style: "primary" }]);
     rows.push([{ text: BT.buttons.decline, callback_data: `of:dr:${offer.id}`, style: "danger" }]);
   } else if (offer.status === "pending_approval") {
-    rows.push([{ text: BT.buttons.approve, callback_data: `of:ap:${offer.id}`, style: "success" }]);
-    rows.push([{ text: BT.buttons.pickTime, callback_data: `of:tm:${offer.id}`, style: "primary" }]);
+    rows.push([{ text: BT.buttons.takeInWork, callback_data: `of:tm:${offer.id}`, style: "success" }]);
     rows.push([{ text: BT.buttons.decline, callback_data: `of:dr:${offer.id}`, style: "danger" }]);
   } else if (offer.status === "scheduled") {
+    if (canPublishNow(offer)) {
+      rows.push([{ text: BT.buttons.publishNow, callback_data: `of:bn:${offer.id}` }]);
+    }
     if (canRescheduleOffer(offer)) {
-      rows.push([{ text: BT.buttons.pickTime, callback_data: `of:tm:${offer.id}`, style: "primary" }]);
+      rows.push([{ text: BT.buttons.changeTime, callback_data: `of:tm:${offer.id}`, style: "primary" }]);
     }
     rows.push([{ text: BT.buttons.cancelScheduled, callback_data: `of:bc:${offer.id}` }]);
+  } else if (offer.status === "cancelled_by_blogger" && canRestoreCancelledOffer(offer)) {
+    rows.push([{ text: BT.buttons.restoreOffer, callback_data: `of:br:${offer.id}` }]);
   }
 
   return rows.length ? { inline_keyboard: rows } : null;
@@ -1542,6 +1567,33 @@ async function cancelOfferByAdvertiser(offer) {
   await finalizeManualApprovalTopicIfNeeded(offer);
 }
 
+async function restoreOfferByBlogger(offer) {
+  if (!canRestoreCancelledOffer(offer)) return false;
+  const pages = buildOfferDatePages(offer);
+  const slotTs = Number(pages?.[0]?.slots?.[0]?.ts || 0);
+  if (!Number.isFinite(slotTs) || slotTs <= 0) return false;
+  offer.status = "scheduled";
+  offer.decisionDeadlineAt = null;
+  offer.uiState = "main";
+  offer.scheduledAt = slotTs;
+  db.offers[String(offer.id)] = offer;
+  saveDb(db);
+  await upsertOfferMessage(offer);
+  return true;
+}
+
+async function publishOfferNow(offer) {
+  if (!canPublishNow(offer)) return false;
+  offer.scheduledAt = Date.now() + 2 * 60 * 1000;
+  offer.status = "scheduled";
+  offer.decisionDeadlineAt = null;
+  offer.uiState = "main";
+  db.offers[String(offer.id)] = offer;
+  saveDb(db);
+  await upsertOfferMessage(offer);
+  return true;
+}
+
 function canUseSlot(offer, slotTs) {
   const pages = buildOfferDatePages(offer);
   for (const page of pages) {
@@ -1559,6 +1611,10 @@ async function applyRescheduledTime(offer, slotTs) {
   offer.scheduledAt = slotTs;
   if (offer.status === "pending_precheck") {
     offer.decisionDeadlineAt = Math.min(slotTs, Date.now() + PRECHECK_DECISION_MS);
+  }
+  if (offer.status === "pending_approval") {
+    offer.status = "scheduled";
+    offer.decisionDeadlineAt = null;
   }
   offer.uiState = "main";
   db.offers[String(offer.id)] = offer;
@@ -2029,7 +2085,7 @@ async function handleOfferCallback(query, parsed) {
   }
 
   if (parsed.action === "ap") {
-    if (offer.status !== "pending_precheck" && offer.status !== "pending_approval") {
+    if (offer.status !== "pending_precheck") {
       await answerCallbackQuery(query.id, offerProcessedCallbackText(offer));
       return;
     }
@@ -2045,6 +2101,18 @@ async function handleOfferCallback(query, parsed) {
     }
     await cancelOfferByBlogger(offer);
     await answerCallbackQuery(query.id, BT.callback.cancelled);
+    return;
+  }
+
+  if (parsed.action === "bn") {
+    const ok = await publishOfferNow(offer);
+    await answerCallbackQuery(query.id, ok ? BT.callback.slotUpdated : BT.callback.slotUnavailable);
+    return;
+  }
+
+  if (parsed.action === "br") {
+    const ok = await restoreOfferByBlogger(offer);
+    await answerCallbackQuery(query.id, ok ? BT.callback.restored : BT.callback.slotUnavailable);
     return;
   }
 
@@ -2426,7 +2494,7 @@ const server = http.createServer(async (req, res) => {
     const action = String(body.action || "").trim();
     if (action === "approve") {
       if (!canWebAppApprove(offer)) {
-        sendJson(res, 400, { error: "Offer is not awaiting approval" });
+        sendJson(res, 400, { error: "Offer cannot be approved directly" });
         return;
       }
       await approveOffer(offer, BT.offer.flow.approved(offer.id));
@@ -2471,6 +2539,26 @@ const server = http.createServer(async (req, res) => {
       const ok = await rescheduleOffer(offer, slotTs);
       if (!ok) {
         sendJson(res, 400, { error: "Slot is unavailable" });
+        return;
+      }
+      sendJson(res, 200, { ok: true, offer: toOfferDto(offer) });
+      return;
+    }
+
+    if (action === "publish_now") {
+      const ok = await publishOfferNow(offer);
+      if (!ok) {
+        sendJson(res, 400, { error: "Offer cannot be published now" });
+        return;
+      }
+      sendJson(res, 200, { ok: true, offer: toOfferDto(offer) });
+      return;
+    }
+
+    if (action === "restore_cancelled") {
+      const ok = await restoreOfferByBlogger(offer);
+      if (!ok) {
+        sendJson(res, 400, { error: "Offer cannot be restored" });
         return;
       }
       sendJson(res, 200, { ok: true, offer: toOfferDto(offer) });
